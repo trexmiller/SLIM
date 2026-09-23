@@ -3,9 +3,7 @@ A Low-Complexity Web Application for Sharing, Logging, Ingestion and Management 
 
 SLIM v0.22.2
 
-Simple Logging, Ingesting and Managing (SLIM) is a lightweight, self-hosted
-environmental monitoring data-management and visualization application built
-for conventional PHP/MySQL web-server infrastructure.
+SLIM is a lightweight, self-hosted environmental monitoring data-management and visualization application built for conventional PHP/MySQL web-server infrastructure.
 
 PUBLIC INTERFACES
 -----------------
