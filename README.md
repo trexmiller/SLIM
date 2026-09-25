@@ -1,4 +1,4 @@
-<img width="2284" height="1646" alt="SLIM_HomePage_Snapshot" src="https://github.com/user-attachments/assets/3655f675-067d-4eb3-8077-17615a293ad4" />
+<img width="228" height="164" alt="SLIM_HomePage_Snapshot" src="https://github.com/user-attachments/assets/3655f675-067d-4eb3-8077-17615a293ad4" />
 SLIM v0.22.3
 
 Sharing, Logging, Ingesting and Managing (SLIM) is a lightweight, self-hosted
