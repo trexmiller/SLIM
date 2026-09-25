@@ -1,0 +1,41 @@
+body{font-family:Arial,sans-serif;background:#f5f6f7;margin:0;color:#222}
+.wrap{max-width:1050px;margin:35px auto;padding:0 20px}
+.card{background:#fff;padding:26px;border:1px solid #ddd;border-radius:8px;margin-bottom:20px}
+label{display:block;margin:10px 0 5px;font-weight:600}
+input[type=text],input[type=number],select,textarea{width:100%;max-width:520px;padding:8px;border:1px solid #bbb;border-radius:4px;box-sizing:border-box;font:inherit}
+select[multiple]{min-height:150px}
+.inline{display:flex;gap:14px;flex-wrap:wrap}.inline>div{flex:1;min-width:200px}
+button{padding:8px 14px;border:0;border-radius:5px;cursor:pointer}
+.primary{background:#222;color:#fff}.secondary{background:#e7e7e7}.danger{background:#8b1e1e;color:#fff}
+.error{background:#fdeaea;border:1px solid #e4aaaa;padding:12px;margin-bottom:16px}
+.ok{background:#eaf7ea;border:1px solid #a8d5a8;padding:12px;margin-bottom:16px}
+.hint{color:#666;font-size:.92rem}
+.display-panel{display:none;margin-top:20px;padding:18px;background:#fafafa;border:1px solid #ddd;border-radius:6px}
+.display-panel.active{display:block}
+.display-item{border:1px solid #ddd;border-radius:6px;padding:14px;margin:10px 0}
+.display-actions form{display:inline-block;margin-right:5px}
+table{width:100%;border-collapse:collapse;margin-top:10px}
+th,td{text-align:left;padding:7px;border-bottom:1px solid #ddd}
+.profile-table select,.profile-table input{max-width:none}
+ .line-series-scroll{overflow-x:auto;margin-top:8px}
+#lineSeriesTable{min-width:1280px}
+#lineSeriesTable th{white-space:nowrap}
+#lineSeriesTable input[type="number"]{max-width:80px}
+#lineSeriesTable select{min-width:105px}
+#lineSeriesTable td:first-child select{min-width:190px}
+#lineSeriesTable td:nth-child(2) input{min-width:145px}
+
+#lineSeriesTable select,
+#lineSeriesTable input[type="text"]{
+    width:100%;
+    max-width:none;
+}
+#lineSeriesTable input[type="color"]{
+    width:54px;
+    height:36px;
+    padding:2px;
+    border:1px solid #bbb;
+    border-radius:4px;
+    background:#fff;
+}
+details summary{cursor:pointer}

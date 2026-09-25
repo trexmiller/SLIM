@@ -1,0 +1,7 @@
+# Example only.
+# Prefer cPanel / hosting-provider Directory Privacy for /admin/.
+#
+# AuthType Basic
+# AuthName "LakeStat Administration"
+# AuthUserFile /home/YOUR_USERNAME/.htpasswd_lakestat
+# Require valid-user

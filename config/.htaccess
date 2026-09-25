@@ -1,0 +1,7 @@
+Require all denied
+
+# Fallback for Apache 2.2 style configurations.
+<IfModule !mod_authz_core.c>
+    Order allow,deny
+    Deny from all
+</IfModule>
