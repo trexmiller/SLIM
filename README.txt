@@ -1,6 +1,6 @@
 SLIM v0.22.3
 
-Simple Logging, Ingesting and Managing (SLIM) is a lightweight, self-hosted
+Sharing, Logging, Ingesting and Managing (SLIM) is a lightweight, self-hosted
 environmental monitoring data-management and visualization application built
 for conventional PHP/MySQL web-server infrastructure.
 
@@ -21,21 +21,48 @@ public and health dashboard configuration, database settings, export, CSV
 import, setup, site content, station management, the station directory, recent
 station data viewing, synthetic test data, and outbound webhook management.
 
-FIRST INSTALLATION
-------------------
-Before browsing to a new SLIM installation, create a private configuration
-directory outside the web-accessible public_html directory. For example:
+INSTALLATION
+------------
+1. Create a MySQL database and database user using your hosting control panel or
+   institutional database tools. Grant the user the permissions needed to create
+   and manage the SLIM database tables. Keep the database name, username,
+   password, and host information available for SLIM setup.
 
-    /home/youraccount/slim_config
+2. Upload or extract the SLIM application into the desired web-accessible
+   directory, for example:
 
-Then edit config/EXTERNAL_CONFIG_PATH in the SLIM application and replace the
-example path /home/USERNAME/slim_config with the absolute path to the directory
-you created. The directory must already exist and be writable by PHP.
+       /home/youraccount/public_html/slim
 
-After saving EXTERNAL_CONFIG_PATH, browse to /admin/ and create the first SLIM
-administrator account. SLIM will create its required configuration files and
-subdirectories in the private directory. A fresh installation will not permit
-administrator creation while configuration would be stored inside public_html.
+3. Before browsing to SLIM, create a private configuration directory outside the
+   web-accessible public_html directory. For example:
+
+       /home/youraccount/slim_config
+
+   The directory must already exist and be writable by PHP.
+
+4. Edit config/EXTERNAL_CONFIG_PATH in the SLIM application. Replace the example
+   path:
+
+       /home/USERNAME/slim_config
+
+   with the absolute path to the private configuration directory created in the
+   previous step. Save the file.
+
+5. Browse to the SLIM administration area at /admin/. On a new installation,
+   SLIM will present the ownership page for creation of the first administrator
+   account. Create the administrator credentials immediately after installation.
+
+6. After ownership is established, complete the web-based SLIM setup and enter
+   the MySQL database connection information. SLIM will create its required
+   configuration files and subdirectories in the private configuration directory.
+
+7. Use the administration interface to configure the site and create or import
+   monitoring stations. Station-specific API keys and ingestion settings are
+   created and managed from within SLIM.
+
+A fresh installation will not permit administrator creation while configuration
+would be stored inside public_html. Routine SLIM installation and configuration
+do not require modification of the application source code.
 
 CONFIGURATION
 -------------
