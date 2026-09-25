@@ -401,9 +401,14 @@ function slim_admin_render_gate(string $mode, string $error = '', string $notice
     $warnings = [];
 
     if ($firstRun && slim_config_inside_webroot()) {
+<<<<<<< HEAD
         $warnings[] = 'Private configuration must be placed outside the published web directory before '
                     . 'the first administrator account can be created. Set config/EXTERNAL_CONFIG_PATH '
                     . 'to the absolute path of that directory and reload this page.';
+=======
+        $warnings[] = 'Configuration is being stored inside the published web directory. '
+                    . 'Move it outside the document root, or confirm that config/.htaccess is honoured by this server.';
+>>>>>>> a876caf43191eb90705420152dacf2ff49210691
     }
 
     if ($firstRun && slim_htaccess_likely_ignored()) {
@@ -460,11 +465,21 @@ account, so complete it immediately after installing SLIM.</p>
        minlength="<?= (int)$minLength ?>">
 <p class="hint">Minimum <?= (int)$minLength ?> characters. Stored only as a bcrypt hash.</p>
 <?php if (slim_config_inside_webroot()): ?>
+<<<<<<< HEAD
 <p class="hint"><strong>Setup required:</strong> create the private configuration directory outside
 <code>public_html</code>, enter its absolute path in <code>config/EXTERNAL_CONFIG_PATH</code>, and reload this page.</p>
 <?php else: ?>
 <button type="submit">Create administrator account</button>
 <?php endif; ?>
+=======
+<label style="display:flex;gap:8px;align-items:flex-start;font-weight:normal;">
+  <input type="checkbox" name="confirm_webroot" value="1" required style="width:auto;margin-top:3px;">
+  <span>I understand configuration, including this password, will be stored inside the
+  published web directory as described above, and want to proceed anyway.</span>
+</label>
+<?php endif; ?>
+<button type="submit">Create administrator account</button>
+>>>>>>> a876caf43191eb90705420152dacf2ff49210691
 </form>
 <?php else: ?>
 <form method="post" autocomplete="off">

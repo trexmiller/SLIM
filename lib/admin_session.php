@@ -113,6 +113,7 @@ if (!$slimAdminHasAccounts) {
                 throw new RuntimeException('The two passwords do not match.');
             }
 
+<<<<<<< HEAD
             // Fresh installations must place operational configuration outside
             // the published web directory before an administrator can claim SLIM.
             // Existing installations that historically used local config remain
@@ -122,6 +123,13 @@ if (!$slimAdminHasAccounts) {
                     'Administrator creation is disabled until SLIM private configuration is '
                     . 'stored outside the published web directory. Create the external directory, '
                     . 'set its absolute path in config/EXTERNAL_CONFIG_PATH, and reload this page.'
+=======
+            if (slim_config_inside_webroot() && empty($_POST['confirm_webroot'])) {
+                throw new RuntimeException(
+                    'Configuration would be stored inside the published web directory. '
+                    . 'Check the confirmation box below if you want to proceed anyway, '
+                    . 'or relocate config/ first -- see the warning above.'
+>>>>>>> a876caf43191eb90705420152dacf2ff49210691
                 );
             }
 
