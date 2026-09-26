@@ -88,6 +88,7 @@ function lakestat_theme_colors(array $appearance): array {
 $appearance=lakestat_appearance_config();
 $site=lakestat_site_config();
 $system=slim_system_config();
+$maxPlotDays=max(1,min(3650,(int)($system['max_plot_days'] ?? 30)));
 
 try {
     $displayTimezone=new DateTimeZone((string)$system['timezone']);
@@ -127,8 +128,8 @@ if(isset($_GET['date_from']) || isset($_GET['date_to'])) {
             }
 
             $days=(int)$startLocal->diff($endLocal)->format('%a')+1;
-            if($days>30) {
-                throw new RuntimeException('Dashboard date range is limited to a maximum of 30 days.');
+            if($days>$maxPlotDays) {
+                throw new RuntimeException('Dashboard date range is limited to a maximum of '.$maxPlotDays.' days.');
             }
 
             $rangeStartUtc=$startLocal->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
@@ -1496,7 +1497,7 @@ $type=$display['type'] ?? '';
     <div class="display-header">
         <div>
             <div class="display-title"><?= h($display['title'] ?? 'Select Date Range') ?></div>
-            <div class="display-note">Choose up to 30 calendar days for all time-series plots</div>
+            <div class="display-note">Choose up to <?= (int)$maxPlotDays ?> calendar days for all time-series plots</div>
         </div>
     </div>
     <div class="display-body">
@@ -1521,7 +1522,7 @@ $type=$display['type'] ?? '';
                 </div>
             </form>
             <div class="date-range-hint">
-                Calendar dates use <?= h((string)$system['timezone']) ?>. Maximum range: 30 days.
+                Calendar dates use <?= h((string)$system['timezone']) ?>. Maximum range: <?= (int)$maxPlotDays ?> days.
             </div>
             <?php if($dateRangeError!==''): ?>
             <div class="date-range-error"><?= h($dateRangeError) ?></div>

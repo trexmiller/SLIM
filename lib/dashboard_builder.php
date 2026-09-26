@@ -786,7 +786,7 @@ elseif($editTypeLabel==='custom_text')$editTypeLabel='Custom Text';
 <h3>Date Range Selector</h3>
 <p class="hint">
 Adds the public From / To calendar controls at this position in the dashboard.
-The selected range applies to all time-series plots and remains limited to 30 days.
+The selected range applies to all time-series plots and is limited by the maximum time-series range configured in System Setup.
 </p>
 </div>
 

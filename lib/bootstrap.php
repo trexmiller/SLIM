@@ -68,7 +68,6 @@ function lakestat_home(): string {
             // almost always means a typo or an unmounted/misconfigured
             // path -- silently using the web root instead would recreate
             // the exact problem this mechanism exists to prevent.
-<<<<<<< HEAD
             $placeholder = (strpos($pointed, 'USERNAME') !== false);
 
             if ($placeholder) {
@@ -84,12 +83,6 @@ function lakestat_home(): string {
                 'config/EXTERNAL_CONFIG_PATH points to "' . $pointed . '", '
                 . 'which does not exist or is not a directory. Create that directory or correct '
                 . 'the absolute path in config/EXTERNAL_CONFIG_PATH.'
-=======
-            throw new RuntimeException(
-                'config/EXTERNAL_CONFIG_PATH points to "' . $pointed . '", '
-                . 'which does not exist or is not a directory. Fix the path '
-                . 'in that file, or remove it to use the default location.'
->>>>>>> a876caf43191eb90705420152dacf2ff49210691
             );
         }
     }
@@ -1358,6 +1351,7 @@ function slim_system_config(): array {
         'timezone' => 'America/Chicago',
         'refresh_seconds' => 120,
         'graph_hours' => 72,
+        'max_plot_days' => 30,
         'require_https' => true,
         'allow_get' => false,
         'allow_form_post' => true,

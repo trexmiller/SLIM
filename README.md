@@ -1,5 +1,6 @@
 <img width="1150" height="800" alt="SLIM_HomePage_Snapshot" src="https://github.com/user-attachments/assets/3655f675-067d-4eb3-8077-17615a293ad4" />
-SLIM v0.22.3
+
+# SLIM v0.22.4
 
 Sharing, Logging, Ingesting and Managing (SLIM) is a lightweight, self-hosted
 environmental monitoring data-management and visualization application built
@@ -123,3 +124,8 @@ REQUIREMENTS
 A PHP/MySQL web environment with the PHP extensions required by the installer
 checks. SLIM is intended to operate on standard LAMP infrastructure, including
 compatible shared-hosting services and institutionally managed Linux servers.
+
+
+TIME-SERIES RANGE
+-----------------
+The administrator can set the maximum calendar-day range available through dashboard date-range selectors in Admin > Setup. The default is 30 days and the configurable software maximum is 3650 days. Large ranges remain subject to dashboard row and hosting-resource limits.
