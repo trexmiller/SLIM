@@ -89,6 +89,7 @@ try {
             'show_coordinates'=>isset($_POST['show_coordinates']),
             'map_zoom'=>max(1,min(19,(int)($_POST['map_zoom'] ?? 7))),
             'max_dashboard_hours'=>max(1,min(8760,(int)($_POST['max_dashboard_hours'] ?? 720))),
+            'max_dashboard_days'=>max(1,min(3650,(int)($_POST['max_dashboard_days'] ?? 30))),
             'max_dashboard_rows'=>max(100,min(20000,(int)($_POST['max_dashboard_rows'] ?? 5000))),
             'rate_limit_enabled'=>isset($_POST['rate_limit_enabled']),
             'rate_limit_per_minute'=>max(5,min(600,(int)($_POST['rate_limit_per_minute'] ?? 60))),
@@ -247,7 +248,19 @@ the password-protected Admin area, or the CLI webhook dispatcher.
 </div>
 
 <div>
-<label>Maximum rows per line graph <?= slim_help_button('Maximum rows per line graph','Server-side cap on observations returned for one public time-series display. This helps prevent very large queries from overloading shared hosting.') ?></label>
+<label>Maximum public date range (days) <?= slim_help_button('Maximum public date range','Maximum calendar range a visitor may request on a public dashboard. Longer permitted ranges are automatically downsampled when they exceed the public plotting-point limit.') ?></label>
+<input
+    type="number"
+    name="max_dashboard_days"
+    value="<?= h((string)($config['max_dashboard_days'] ?? 30)) ?>"
+    min="1"
+    max="3650"
+>
+<p class="hint">Default 30 days; administrator configurable up to 3650 days.</p>
+</div>
+
+<div>
+<label>Maximum points per public time-series plot <?= slim_help_button('Maximum points per public time-series plot','If a public time-series range contains more observations than this limit, SLIM systematically selects raw observations across the complete interval. Values are not averaged or aggregated, and stored/exported data are unchanged.') ?></label>
 <input
     type="number"
     name="max_dashboard_rows"
@@ -255,7 +268,7 @@ the password-protected Admin area, or the CLI webhook dispatcher.
     min="100"
     max="20000"
 >
-<p class="hint">Default 5000 rows; hard maximum 20,000 rows.</p>
+<p class="hint">Default 5000 points; hard maximum 20,000. Larger datasets are systematically subsampled across the complete requested interval.</p>
 </div>
 </div>
 

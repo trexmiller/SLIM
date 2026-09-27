@@ -88,7 +88,11 @@ function lakestat_theme_colors(array $appearance): array {
 $appearance=lakestat_appearance_config();
 $site=lakestat_site_config();
 $system=slim_system_config();
-$maxPlotDays=max(1,min(3650,(int)($system['max_plot_days'] ?? 30)));
+// Health dashboards are administrator-only and may request long, full-resolution ranges.
+// Public dashboards use their own configurable date-range cap and point limit.
+$maxPlotDays = $slimHealthDashboard
+    ? max(1,min(3650,(int)($system['max_plot_days'] ?? 3650)))
+    : max(1,min(3650,(int)($publicLimits['max_dashboard_days'] ?? 30)));
 
 try {
     $displayTimezone=new DateTimeZone((string)$system['timezone']);
@@ -288,8 +292,12 @@ try {
                 // All time-series plots use the global period unless the viewer
                 // selects a calendar date range.
                 $hours = max(1,(int)($system['graph_hours'] ?? 72));
-                $hours = min($hours,(int)$publicLimits['max_dashboard_hours']);
+                if(!$slimHealthDashboard) {
+                    $hours = min($hours,(int)$publicLimits['max_dashboard_hours']);
+                }
                 $maxRows = (int)$publicLimits['max_dashboard_rows'];
+                $wasDownsampled = false;
+                $sourceRowCount = 0;
 
                 $select = ['`observed_at`','`received_at`'];
 
@@ -304,22 +312,67 @@ try {
                 }
 
                 if($customDateRange && $rangeStartUtc!==null && $rangeEndUtc!==null) {
-                    $sql = "SELECT ".implode(', ', $select)."
-                            FROM `{$table}`
-                            WHERE COALESCE(`observed_at`,`received_at`) >= :range_start
+                    $where = "COALESCE(`observed_at`,`received_at`) >= :range_start
                               AND COALESCE(`observed_at`,`received_at`) < :range_end
-                              AND (".implode(' OR ',$nonnullParts).")
-                            ORDER BY COALESCE(`observed_at`,`received_at`) DESC
-                            LIMIT {$maxRows}";
+                              AND (".implode(' OR ',$nonnullParts).")";
 
-                    $stmt=$pdo->prepare($sql);
-                    $stmt->execute([
-                        ':range_start'=>$rangeStartUtc,
-                        ':range_end'=>$rangeEndUtc
-                    ]);
+                    if($slimHealthDashboard) {
+                        // Administrator-only health dashboards intentionally return every
+                        // observation in the requested interval without downsampling.
+                        $sql = "SELECT ".implode(', ', $select)."
+                                FROM `{$table}`
+                                WHERE {$where}
+                                ORDER BY COALESCE(`observed_at`,`received_at`) ASC";
+                        $stmt=$pdo->prepare($sql);
+                        $stmt->execute([
+                            ':range_start'=>$rangeStartUtc,
+                            ':range_end'=>$rangeEndUtc
+                        ]);
+                        $rows=$stmt->fetchAll();
+                        $sourceRowCount=count($rows);
+                    } else {
+                        $countSql="SELECT COUNT(*) FROM `{$table}` WHERE {$where}";
+                        $countStmt=$pdo->prepare($countSql);
+                        $countStmt->execute([
+                            ':range_start'=>$rangeStartUtc,
+                            ':range_end'=>$rangeEndUtc
+                        ]);
+                        $sourceRowCount=(int)$countStmt->fetchColumn();
 
-                    $rows=$stmt->fetchAll();
-                    $rows=array_reverse($rows);
+                        if($sourceRowCount <= $maxRows) {
+                            $sql = "SELECT ".implode(', ', $select)."
+                                    FROM `{$table}`
+                                    WHERE {$where}
+                                    ORDER BY COALESCE(`observed_at`,`received_at`) ASC";
+                            $stmt=$pdo->prepare($sql);
+                            $stmt->execute([
+                                ':range_start'=>$rangeStartUtc,
+                                ':range_end'=>$rangeEndUtc
+                            ]);
+                            $rows=$stmt->fetchAll();
+                        } else {
+                            // Systematically select raw observations across the complete
+                            // requested interval. Values are not averaged or aggregated.
+                            $stride=max(1,(int)ceil($sourceRowCount/$maxRows));
+                            $innerSelect=implode(', ', $select);
+                            $sql = "SELECT `observed_at`,`received_at`, ".implode(', ',array_map(fn($f)=>"`{$f}`",$safeFields))."
+                                    FROM (
+                                        SELECT {$innerSelect},
+                                               ROW_NUMBER() OVER (ORDER BY COALESCE(`observed_at`,`received_at`) ASC) AS slim_rn
+                                        FROM `{$table}`
+                                        WHERE {$where}
+                                    ) slim_sample
+                                    WHERE MOD(slim_rn - 1, {$stride}) = 0 OR slim_rn = {$sourceRowCount}
+                                    ORDER BY COALESCE(`observed_at`,`received_at`) ASC";
+                            $stmt=$pdo->prepare($sql);
+                            $stmt->execute([
+                                ':range_start'=>$rangeStartUtc,
+                                ':range_end'=>$rangeEndUtc
+                            ]);
+                            $rows=$stmt->fetchAll();
+                            $wasDownsampled=true;
+                        }
+                    }
 
                 } else {
                     $latestSeriesSql=
@@ -347,22 +400,48 @@ try {
                             ->sub(new DateInterval('PT'.$hours.'H'))
                             ->format('Y-m-d H:i:s');
 
-                        $sql = "SELECT ".implode(', ', $select)."
-                                FROM `{$table}`
-                                WHERE COALESCE(`observed_at`,`received_at`) >= :cutoff
+                        $where = "COALESCE(`observed_at`,`received_at`) >= :cutoff
                                   AND COALESCE(`observed_at`,`received_at`) <= :latest
-                                  AND (".implode(' OR ',$nonnullParts).")
-                                ORDER BY COALESCE(`observed_at`,`received_at`) DESC
-                                LIMIT {$maxRows}";
+                                  AND (".implode(' OR ',$nonnullParts).")";
 
-                        $stmt=$pdo->prepare($sql);
-                        $stmt->execute([
-                            ':cutoff'=>$cutoff,
-                            ':latest'=>$latestSeriesTime
-                        ]);
+                        if($slimHealthDashboard) {
+                            $sql = "SELECT ".implode(', ', $select)."
+                                    FROM `{$table}` WHERE {$where}
+                                    ORDER BY COALESCE(`observed_at`,`received_at`) ASC";
+                            $stmt=$pdo->prepare($sql);
+                            $stmt->execute([':cutoff'=>$cutoff,':latest'=>$latestSeriesTime]);
+                            $rows=$stmt->fetchAll();
+                            $sourceRowCount=count($rows);
+                        } else {
+                            $countSql="SELECT COUNT(*) FROM `{$table}` WHERE {$where}";
+                            $countStmt=$pdo->prepare($countSql);
+                            $countStmt->execute([':cutoff'=>$cutoff,':latest'=>$latestSeriesTime]);
+                            $sourceRowCount=(int)$countStmt->fetchColumn();
 
-                        $rows=$stmt->fetchAll();
-                        $rows=array_reverse($rows);
+                            if($sourceRowCount <= $maxRows) {
+                                $sql = "SELECT ".implode(', ', $select)."
+                                        FROM `{$table}` WHERE {$where}
+                                        ORDER BY COALESCE(`observed_at`,`received_at`) ASC";
+                                $stmt=$pdo->prepare($sql);
+                                $stmt->execute([':cutoff'=>$cutoff,':latest'=>$latestSeriesTime]);
+                                $rows=$stmt->fetchAll();
+                            } else {
+                                $stride=max(1,(int)ceil($sourceRowCount/$maxRows));
+                                $innerSelect=implode(', ', $select);
+                                $sql = "SELECT `observed_at`,`received_at`, ".implode(', ',array_map(fn($f)=>"`{$f}`",$safeFields))."
+                                        FROM (
+                                            SELECT {$innerSelect},
+                                                   ROW_NUMBER() OVER (ORDER BY COALESCE(`observed_at`,`received_at`) ASC) AS slim_rn
+                                            FROM `{$table}` WHERE {$where}
+                                        ) slim_sample
+                                        WHERE MOD(slim_rn - 1, {$stride}) = 0 OR slim_rn = {$sourceRowCount}
+                                        ORDER BY COALESCE(`observed_at`,`received_at`) ASC";
+                                $stmt=$pdo->prepare($sql);
+                                $stmt->execute([':cutoff'=>$cutoff,':latest'=>$latestSeriesTime]);
+                                $rows=$stmt->fetchAll();
+                                $wasDownsampled=true;
+                            }
+                        }
                     } else {
                         $rows=[];
                     }
@@ -417,6 +496,8 @@ try {
                 $lineData[$id] = [
                     'datasets' => array_values($datasets),
                     'row_count' => count($rows),
+                    'source_row_count' => $sourceRowCount,
+                    'downsampled' => $wasDownsampled,
                     'y_label' => isset($display['y_label']) ? (string)$display['y_label'] : '',
                     'y2_label' => isset($display['y2_label']) ? (string)$display['y2_label'] : '',
                     'dygraph' => isset($display['dygraph']) && is_array($display['dygraph'])
@@ -1497,7 +1578,7 @@ $type=$display['type'] ?? '';
     <div class="display-header">
         <div>
             <div class="display-title"><?= h($display['title'] ?? 'Select Date Range') ?></div>
-            <div class="display-note">Choose up to <?= (int)$maxPlotDays ?> calendar days for all time-series plots</div>
+            <div class="display-note">Choose up to <?= (int)$maxPlotDays ?> calendar days for all time-series plots<?= $slimHealthDashboard ? '; health plots use all observations and large ranges may load slowly' : '' ?></div>
         </div>
     </div>
     <div class="display-body">
@@ -1759,7 +1840,16 @@ foreach($lineData[$id]['datasets'] as $ds){
         <div>
             <div class="display-title"><?= h($display['title'] ?? 'Time Series') ?></div>
             <div class="display-note">
-                Last <?= (int)min((int)($display['hours'] ?? 24),(int)$publicLimits['max_dashboard_hours']) ?> hours of available data
+                <?php if($customDateRange): ?>
+                    <?= h($rangeStartLocal) ?> through <?= h($rangeEndLocal) ?>
+                <?php else: ?>
+                    Last <?= (int)($slimHealthDashboard ? max(1,(int)($system['graph_hours'] ?? 72)) : min((int)($display['hours'] ?? 24),(int)$publicLimits['max_dashboard_hours'])) ?> hours of available data
+                <?php endif; ?>
+                <?php if(!$slimHealthDashboard && !empty($lineData[$id]['downsampled'])): ?>
+                    &nbsp;|&nbsp; <?= number_format((int)$lineData[$id]['source_row_count']) ?> observations systematically sampled to <?= number_format((int)$lineData[$id]['row_count']) ?> plotted points; values are not averaged
+                <?php elseif($slimHealthDashboard): ?>
+                    &nbsp;|&nbsp; full-resolution administrative view
+                <?php endif; ?>
             </div>
         </div>
     </div>

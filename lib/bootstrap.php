@@ -573,6 +573,7 @@ function lakestat_default_site_config(): array {
         'show_coordinates' => true,
         'map_zoom' => 7,
         'max_dashboard_hours' => 720,
+        'max_dashboard_days' => 30,
         'max_dashboard_rows' => 5000,
         'rate_limit_enabled' => true,
         'rate_limit_per_minute' => 60,
@@ -986,6 +987,10 @@ function slim_public_limits(): array {
         'max_dashboard_hours' => max(
             1,
             min(8760, (int)($site['max_dashboard_hours'] ?? 720))
+        ),
+        'max_dashboard_days' => max(
+            1,
+            min(3650, (int)($site['max_dashboard_days'] ?? 30))
         ),
         'max_dashboard_rows' => max(
             100,
