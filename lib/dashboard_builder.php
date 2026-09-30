@@ -212,6 +212,19 @@ try {
 
         $action=$_POST['action'] ?? '';
 
+        if ($action==='save_dashboard_info') {
+            $displayConfig['header_info']=[
+                'show_station_code'=>isset($_POST['show_station_code']),
+                'show_coordinates'=>isset($_POST['show_coordinates']),
+                'show_last_received'=>isset($_POST['show_last_received']),
+                'show_local_time'=>isset($_POST['show_local_time'])
+            ];
+            lakestat_write_php_config(lakestat_display_config_path($selectedCode,$slimDashboardKind),$displayConfig);
+            $_SESSION[$slimDashboardFlashKey]='Dashboard information settings saved.';
+            header('Location: ?station=' . urlencode($selectedCode));
+            exit;
+        }
+
         if ($action==='copy_dashboard') {
             $sourceCode=lakestat_station_code((string)($_POST['source_station'] ?? ''));
 
@@ -302,7 +315,7 @@ try {
 
             } elseif ($type==='custom_text') {
                 $display['header_text']=trim((string)($_POST['custom_header_text'] ?? ''));
-                $display['body_text']=trim((string)($_POST['custom_body_text'] ?? ''));
+                $display['body_text']=slim_sanitize_content_html((string)($_POST['custom_body_text'] ?? ''));
 
                 if($display['header_text']==='' && $display['body_text']==='') {
                     throw new RuntimeException('Add header text, body text, or both.');
@@ -469,6 +482,24 @@ try {
                 $display['coordinate_label']=trim((string)($_POST['profile_coordinate_label'] ?? 'Depth'));
                 $display['coordinate_units']=trim((string)($_POST['profile_coordinate_units'] ?? 'm'));
                 $display['recent_n']=max(1,(int)($_POST['profile_recent_n'] ?? 1));
+
+                $profileColorMin=trim((string)($_POST['profile_color_min'] ?? ''));
+                $profileColorMax=trim((string)($_POST['profile_color_max'] ?? ''));
+
+                if($profileColorMin!=='' && !is_numeric($profileColorMin)) {
+                    throw new RuntimeException('Profile color scale minimum must be numeric or left blank.');
+                }
+                if($profileColorMax!=='' && !is_numeric($profileColorMax)) {
+                    throw new RuntimeException('Profile color scale maximum must be numeric or left blank.');
+                }
+
+                $display['color_min']=$profileColorMin==='' ? null : (float)$profileColorMin;
+                $display['color_max']=$profileColorMax==='' ? null : (float)$profileColorMax;
+
+                if($display['color_min']!==null && $display['color_max']!==null && $display['color_min'] >= $display['color_max']) {
+                    throw new RuntimeException('Profile color scale maximum must be greater than the minimum.');
+                }
+
                 $display['points']=$points;
 
             } elseif ($type==='directional_recent') {
@@ -630,13 +661,9 @@ if($station && !empty($station['fields'])) {
 <?php if($error): ?><div class="error"><?= h($error) ?></div><?php endif; ?>
 <?php if($message): ?><div class="ok"><?= h($message) ?></div><?php endif; ?>
 
-<form method="get">
+<form method="get" id="dashboardStationForm">
 <label>Station <?= slim_help_button('Station','Select the monitoring station whose '.($slimHealthDashboard ? 'private station health' : 'public').' dashboard you want to configure. Each station has its own independent set and order of displays.') ?></label>
-<select id="dashboardStationSelect" name="station" onchange="
-    var link=document.getElementById('viewDashboardLink');
-    if(link){link.href=<?= json_encode($slimDashboardViewBase) ?>+encodeURIComponent(this.value);}
-    this.form.submit();
-">
+<select id="dashboardStationSelect" name="station" onchange="this.form.submit()">
 <?php foreach($stations as $code=>$info): ?>
 <option value="<?= h($code) ?>" <?= $selectedCode===$code?'selected':'' ?>>
 <?= h($info['name']) ?> — <?= h($code) ?>
@@ -645,6 +672,30 @@ if($station && !empty($station['fields'])) {
 </select>
 </form>
 </div>
+
+<?php if($station): ?>
+<?php
+$headerInfo=is_array($displayConfig['header_info'] ?? null) ? $displayConfig['header_info'] : [];
+$showStationCode=!array_key_exists('show_station_code',$headerInfo) || !empty($headerInfo['show_station_code']);
+$showCoordinates=!array_key_exists('show_coordinates',$headerInfo) || !empty($headerInfo['show_coordinates']);
+$showLastReceived=!array_key_exists('show_last_received',$headerInfo) || !empty($headerInfo['show_last_received']);
+$showLocalTime=!array_key_exists('show_local_time',$headerInfo) || !empty($headerInfo['show_local_time']);
+?>
+<div class="card">
+<h2>Dashboard Information</h2>
+<p class="hint">Choose which station information appears at the top of this <?= $slimHealthDashboard ? 'private station health' : 'public' ?> dashboard. Station Name remains the page heading.</p>
+<form method="post">
+<input type="hidden" name="csrf" value="<?= h($_SESSION['dashboard_csrf']) ?>">
+<input type="hidden" name="action" value="save_dashboard_info">
+<input type="hidden" name="station" value="<?= h($selectedCode) ?>">
+<label><input type="checkbox" name="show_station_code" value="1" <?= $showStationCode?'checked':'' ?>> Show station code</label>
+<label><input type="checkbox" name="show_coordinates" value="1" <?= $showCoordinates?'checked':'' ?>> Show station coordinates</label>
+<label><input type="checkbox" name="show_last_received" value="1" <?= $showLastReceived?'checked':'' ?>> Show last received time</label>
+<label><input type="checkbox" name="show_local_time" value="1" <?= $showLocalTime?'checked':'' ?>> Show local time</label>
+<p><button class="primary" type="submit">Save Dashboard Information</button></p>
+</form>
+</div>
+<?php endif; ?>
 
 <?php if($station && count($stations)>1): ?>
 <div class="card">
@@ -770,7 +821,7 @@ elseif($editTypeLabel==='custom_text')$editTypeLabel='Custom Text';
 </select>
 <?php endif; ?>
 
-<label>Display title <?= slim_help_button('Display title','Heading shown above this display on the '.($slimHealthDashboard ? 'private station health' : 'public').' dashboard.') ?></label>
+<label>Display title <?= slim_help_button('Display title','A name used to identify and manage this display within SLIM. The title is also shown above certain display types on the '.($slimHealthDashboard ? 'private station health' : 'public').' dashboard.') ?></label>
 <input type="text" name="title" value="<?= h($editDisplay['title'] ?? '') ?>" required>
 
 <label>Display width <?= slim_help_button('Display width','Controls horizontal space on larger screens. Displays automatically stack on small screens.') ?></label>
@@ -794,7 +845,7 @@ The selected range applies to all time-series plots and is limited by the maximu
 <h3>Custom Text</h3>
 <p class="hint">
 Use this display for explanatory text, section introductions, notes, instructions,
-or other information for dashboard viewers. Text is displayed safely as plain text.
+or other information for dashboard viewers. Use the formatting toolbar to emphasize text without writing HTML.
 </p>
 
 <label>Header text <?= slim_help_button('Custom text header','Optional heading shown inside a Custom Text display.') ?></label>
@@ -802,11 +853,32 @@ or other information for dashboard viewers. Text is displayed safely as plain te
        value="<?= h((string)($editDisplay['header_text'] ?? '')) ?>"
        placeholder="Water Temperature">
 
-<label>Body text <?= slim_help_button('Custom text body','Explanatory text shown to viewers. Line breaks are preserved and HTML is escaped for safety.') ?></label>
-<textarea name="custom_body_text" rows="7"
-          placeholder="Add explanatory text for dashboard viewers..."><?= h((string)($editDisplay['body_text'] ?? '')) ?></textarea>
-
-<p class="hint">Line breaks in the body text are preserved.</p>
+<label>Body text <?= slim_help_button('Custom text body','Format dashboard text with controlled sizes, bold, italic, underline, lists, links, subscript, and superscript. SLIM sanitizes the saved formatting for safety.') ?></label>
+<div class="slim-wysiwyg-toolbar" role="toolbar" aria-label="Custom text formatting">
+    <select id="customTextSize" aria-label="Text size" title="Text size">
+        <option value="normal">Normal</option>
+        <option value="large">Large</option>
+        <option value="xlarge">Extra large</option>
+    </select>
+    <button type="button" data-cmd="bold" title="Bold"><strong>B</strong></button>
+    <button type="button" data-cmd="italic" title="Italic"><em>I</em></button>
+    <button type="button" data-cmd="underline" title="Underline"><u>U</u></button>
+    <button type="button" data-cmd="insertUnorderedList" title="Bulleted list">• List</button>
+    <button type="button" data-cmd="insertOrderedList" title="Numbered list">1. List</button>
+    <button type="button" data-cmd="subscript" title="Subscript">X<sub>2</sub></button>
+    <button type="button" data-cmd="superscript" title="Superscript">X<sup>2</sup></button>
+    <button type="button" id="customTextLink" title="Add link">Link</button>
+    <button type="button" data-cmd="undo" title="Undo">Undo</button>
+    <button type="button" data-cmd="redo" title="Redo">Redo</button>
+</div>
+<div id="customTextEditor" class="slim-wysiwyg-editor" contenteditable="true" role="textbox" aria-multiline="true" data-placeholder="Add explanatory text for dashboard viewers..."><?php
+$customBody=(string)($editDisplay['body_text'] ?? '');
+if($customBody!=='') {
+    echo preg_match('/<[^>]+>/', $customBody) ? slim_sanitize_content_html($customBody) : nl2br(h($customBody));
+}
+?></div>
+<textarea id="customBodyText" name="custom_body_text" hidden></textarea>
+<p class="hint">Text sizes are predefined by SLIM so dashboard formatting remains consistent and responsive.</p>
 </div>
 
 <div id="panel-line" class="display-panel">
@@ -1040,6 +1112,12 @@ five-bin scaling from the displayed data.
 <div><label>Average most recent N <?= slim_help_button('Profile averaging','Number of recent observations averaged for each profile variable. Use 1 for the latest observation only.') ?></label><input type="number" name="profile_recent_n" value="<?= h((string)($editDisplay['recent_n'] ?? 1)) ?>" min="1"></div>
 </div>
 
+<div class="inline">
+<div><label>Color scale minimum <?= slim_help_button('Color scale minimum','Optional fixed lower value for the profile color scale. Leave blank to use the minimum value found across the full available dataset for the configured profile variables.') ?></label><input type="number" step="any" name="profile_color_min" value="<?= h(isset($editDisplay['color_min']) && $editDisplay['color_min'] !== null ? (string)$editDisplay['color_min'] : '') ?>" placeholder="Automatic"></div>
+<div><label>Color scale maximum <?= slim_help_button('Color scale maximum','Optional fixed upper value for the profile color scale. Leave blank to use the maximum value found across the full available dataset for the configured profile variables.') ?></label><input type="number" step="any" name="profile_color_max" value="<?= h(isset($editDisplay['color_max']) && $editDisplay['color_max'] !== null ? (string)$editDisplay['color_max'] : '') ?>" placeholder="Automatic"></div>
+</div>
+<p class="hint">These values control the color scale only. Blank limits are determined from all available observations for the variables included in this profile, so colors remain comparable over time.</p>
+
 <table id="profileTable">
 <thead><tr>
 <th>Variable <?= slim_help_button('Profile variable','Station variable represented at this spatial position.') ?></th>
@@ -1147,6 +1225,15 @@ file_uploads = <?= h((string)ini_get('file_uploads')) ?>.
 
 </div>
 
+<style>
+.slim-wysiwyg-toolbar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:6px 0 0;padding:8px;border:1px solid #ccd4dc;border-bottom:0;border-radius:6px 6px 0 0;background:#f6f8fa}
+.slim-wysiwyg-toolbar button,.slim-wysiwyg-toolbar select{width:auto;margin:0;padding:6px 9px;min-height:34px}
+.slim-wysiwyg-editor{min-height:150px;padding:10px 12px;border:1px solid #ccd4dc;border-radius:0 0 6px 6px;background:#fff;line-height:1.55;overflow:auto}
+.slim-wysiwyg-editor:empty:before{content:attr(data-placeholder);color:#7b8794}
+.slim-wysiwyg-editor .slim-text-normal{font-size:16px}
+.slim-wysiwyg-editor .slim-text-large{font-size:21px}
+.slim-wysiwyg-editor .slim-text-xlarge{font-size:26px}
+</style>
 <script>
 
 const editDisplay = <?= json_encode($editDisplay, JSON_UNESCAPED_SLASHES) ?>;
@@ -1272,7 +1359,92 @@ function hydrateEditDisplay(){
     }
 }
 
-document.addEventListener('DOMContentLoaded',hydrateEditDisplay);
+function initCustomTextEditor(){
+    var editor=document.getElementById('customTextEditor');
+    var hidden=document.getElementById('customBodyText');
+    if(!editor || !hidden)return;
+
+    function sync(){ hidden.value=editor.innerHTML; }
+    document.querySelectorAll('.slim-wysiwyg-toolbar [data-cmd]').forEach(function(button){
+        button.addEventListener('mousedown',function(e){e.preventDefault();});
+        button.addEventListener('click',function(){
+            editor.focus();
+            document.execCommand(button.dataset.cmd,false,null);
+            sync();
+        });
+    });
+
+    var savedSizeRange=null;
+    function rememberSizeRange(){
+        var selection=window.getSelection();
+        if(!selection || selection.rangeCount===0 || selection.isCollapsed)return;
+        var candidate=selection.getRangeAt(0);
+        if(editor.contains(candidate.commonAncestorContainer))savedSizeRange=candidate.cloneRange();
+    }
+    editor.addEventListener('mouseup',rememberSizeRange);
+    editor.addEventListener('keyup',rememberSizeRange);
+
+    var size=document.getElementById('customTextSize');
+    if(size){
+        size.addEventListener('mousedown',rememberSizeRange);
+        size.addEventListener('change',function(){
+        var selection=window.getSelection();
+        var range=savedSizeRange ? savedSizeRange.cloneRange() :
+            (selection && selection.rangeCount ? selection.getRangeAt(0).cloneRange() : null);
+        if(!range || range.collapsed || !editor.contains(range.commonAncestorContainer))return;
+        editor.focus();
+        selection=window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+
+        /* Size choices are mutually exclusive. First isolate the selected
+           content, then remove any SLIM size wrappers already present so
+           repeated Large/Extra large changes cannot compound. */
+        var fragment=range.extractContents();
+        var holder=document.createElement('div');
+        holder.appendChild(fragment);
+
+        holder.querySelectorAll('.slim-text-normal,.slim-text-large,.slim-text-xlarge').forEach(function(node){
+            var parent=node.parentNode;
+            while(node.firstChild)parent.insertBefore(node.firstChild,node);
+            parent.removeChild(node);
+        });
+
+        /* Always apply an explicit size span, including Normal. This is
+           important when the selection is inside an older Large/Extra large
+           ancestor: removing the inner size alone would simply expose the
+           ancestor's larger font size again. Fixed pixel sizes ensure the
+           selected choice wins even if legacy nested markup surrounds it. */
+        var span=document.createElement('span');
+        span.className='slim-text-'+size.value;
+        while(holder.firstChild)span.appendChild(holder.firstChild);
+        range.insertNode(span);
+        selection.removeAllRanges();
+        var after=document.createRange();
+        after.selectNodeContents(span);
+        selection.addRange(after);
+        savedSizeRange=null;
+        sync();
+        });
+    }
+
+    var link=document.getElementById('customTextLink');
+    if(link){
+        link.addEventListener('mousedown',function(e){e.preventDefault();});
+        link.addEventListener('click',function(){
+            editor.focus();
+            var url=window.prompt('Enter link URL (https://...)');
+            if(url)document.execCommand('createLink',false,url);
+            sync();
+        });
+    }
+    editor.addEventListener('input',sync);
+    var form=editor.closest('form');
+    if(form)form.addEventListener('submit',sync);
+    sync();
+}
+
+document.addEventListener('DOMContentLoaded',function(){ hydrateEditDisplay(); initCustomTextEditor(); });
 
 
 function showPanel(){

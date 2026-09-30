@@ -1,4 +1,4 @@
-SLIM v0.22.5
+SLIM v0.22.15
 
 Sharing, Logging, Ingesting and Managing (SLIM) is a lightweight, self-hosted
 environmental monitoring data-management and visualization application built
@@ -148,3 +148,123 @@ public row limit or downsampling. They return all observations in the selected i
 The administrator can set the maximum health-dashboard date range under **Admin → Setup →
 System Defaults**. Large ranges of high-frequency observations may require substantial
 query, transfer, and browser-rendering time.
+
+
+## Custom Text formatting
+
+Custom Text dashboard displays include a lightweight WYSIWYG toolbar. Administrators can apply Normal, Large, or Extra large text to selected text and use bold, italic, underline, bulleted or numbered lists, links, subscript, and superscript. Text sizes are predefined by SLIM rather than arbitrary font sizes so dashboards remain consistent and responsive. Saved formatted content is sanitized server-side using an allowlist before it is displayed. Existing plain-text Custom Text displays remain supported.
+
+
+## Public typography
+
+SLIM v0.22.7 increases the base typography on public-facing pages by approximately 20–25% to improve readability on desktop, mobile, and public displays. The change applies to the public station directory/home page, public dashboards, About, and Contact pages. Headings and already-prominent display elements use a moderated scale rather than being enlarged uniformly. Administrative pages and private health dashboards retain their denser typography. Custom Text Normal, Large, and Extra large sizes remain relative to the public dashboard text scale.
+
+
+## Accessibility
+
+SLIM v0.22.11 establishes WCAG 2.1 Level AA as the accessibility target for the application. Public pages provide a keyboard-accessible skip link, visible focus indicators, responsive reflow support, scalable text, meaningful image alternative text, and reduced-motion behavior when requested by the operating system. Administrative help dialogs expose dialog semantics, move keyboard focus into the dialog when opened, return focus to the triggering control when closed, close with Escape, and keep Tab navigation within the open dialog. Standard HTML form controls and descriptive labels are retained wherever practical.
+
+SLIM's controlled Custom Text formatting intentionally limits arbitrary styling that could undermine readability. Administrators remain responsible for the accessibility of content they supply, including meaningful image alternative text, descriptive link text, and avoiding reliance on color alone to communicate scientific meaning. Dashboard line colors should therefore be supplemented by labels, line styles, symbols, or other identifying information when color distinctions are important.
+
+WCAG conformance cannot be established by source-code changes or automated checks alone. Deployments should be manually evaluated with keyboard-only navigation, 200% text zoom, 320 CSS-pixel reflow, contrast testing for administrator-selected theme colors, and representative screen-reader testing before making a formal WCAG 2.1 AA conformance claim.
+
+
+### v0.22.11 gauge readability
+Gauge supporting information—including units, minimum/maximum scale labels, recent-valid observation notes, and configured-range annotations—uses larger, high-contrast white text to improve readability on dark dashboard backgrounds.
+
+
+### v0.22.11 Custom Text size selection
+Custom Text size choices are mutually exclusive. Changing selected text among Normal, Large, and Extra large now replaces the previous SLIM size formatting rather than nesting size spans, preventing repeated size changes from progressively enlarging text.
+
+
+### v0.22.11 Custom Text size correction
+Custom Text Normal, Large, and Extra large sizes now use fixed, non-compounding sizes in both the editor and public renderer. This prevents legacy or browser-created nested size spans from multiplying relative `em` sizes. The editor also preserves the selected text range when the size selector receives focus, making size changes reliably replace the visual size in either direction.
+
+
+### v0.22.15 time-series display text
+Removed the redundant “Last N hours of available data” annotation from time-series plot headers. The plotted date/time axis provides the displayed time range. Downsampling and administrative full-resolution notices are retained when applicable.
+
+
+### v0.22.15 polar display observation range
+Polar displays now show the earliest and latest `observed_at` timestamps for the valid paired observations actually used to construct the display, together with the number of observations included. Polar selection and timestamp reporting use `observed_at` rather than `received_at`.
+
+
+### v0.22.15 display readability and date-range guidance
+- Removed the redundant “Directional frequency by magnitude class” subtitle from polar displays.
+- Increased the spatial-profile legend unit label to 14 px with higher contrast so it is comparable in size to plotted numeric labels.
+- Clarified the public date-range selector: viewers may select up to the administrator-configured number of calendar days, and large datasets are automatically downsampled across the selected period to limit the number of displayed points. Health dashboards continue to use all observations.
+
+
+### v0.22.32 date-range guidance and Custom Text compatibility
+- Moved the date-range/downsampling guidance directly beneath the date controls so it is clearly visible to viewers.
+- Added compatibility handling for Custom Text formatting saved as escaped HTML by earlier editor revisions.
+- The Custom Text sanitizer now collapses simple legacy nested SLIM size wrappers, retaining the innermost explicit size choice.
+
+
+### v0.22.32 version footer restoration
+Restored the SLIM version number in the shared page footer. `VERSION.txt` again uses the `SLIM vX.Y.Z` format expected by `slim_version()`, so public dashboards, public pages, setup pages, and administrative pages using the shared footer display the current version.
+
+
+### v0.22.32 skip-link visibility
+Corrected the accessibility “Skip to main content” control so it remains visually hidden during normal mouse/touch use and becomes visible only when it receives keyboard focus. The link remains available to keyboard and screen-reader users and continues to target the page's main-content landmark.
+
+
+### v0.22.32 site-title configuration cleanup
+- Renamed “Public site title” to “Site Title” in Public Site Configuration.
+- Removed the redundant “System Name” field from System Defaults.
+- Existing `dashboard_name` values remain preserved in `config/system.php` for backward compatibility when System Defaults are saved; the setting is no longer exposed in the administrator interface.
+
+
+### v0.22.32 System Defaults cleanup
+- Removed the unused “Organization” field from the System Defaults administrator interface.
+- Existing `organization` values remain preserved in `config/system.php` for backward compatibility when System Defaults are saved.
+- System Defaults now focuses on settings that affect application behavior rather than unused identity metadata.
+
+
+### v0.22.32 image display presentation
+Image-display titles remain required for identifying displays in the Dashboard Builder but are no longer rendered above images on dashboards. Optional image captions remain visible when configured, and image alt text continues to be used for accessibility.
+
+
+### v0.22.32 station dashboard heading
+Station Name is now rendered as the page-level H1 at the top of each station dashboard, including private station-health dashboards, regardless of the configured logo/branding mode. The existing Station Code remains the internal/URL identifier and is still shown in the dashboard metadata. Browser page titles continue to use the station name.
+
+
+### v0.22.32 Dashboard Setup station selector
+Corrected station switching in Dashboard Setup. Changing the Station selector now navigates directly to the selected station's setup URL and reloads that station's independent dashboard configuration. A normal “Select Station” submit button is also provided as a non-JavaScript fallback. The same selector behavior is used for public-dashboard and station-health-dashboard setup.
+
+
+### v0.22.32 spatial/profile color scaling
+Spatial/profile displays now support optional Color scale minimum and Color scale maximum settings. A supplied bound is fixed; a blank bound is calculated from the full available dataset across all variables configured in that profile. This keeps a given value mapped to the same color over time instead of rescaling colors from only the current profile. The profile legend now shows the effective maximum and minimum values. These settings affect color mapping only, not the spatial/profile axis.
+
+
+### v0.22.32 station map presentation
+Station Map display titles remain required for identifying map displays in Dashboard Setup but are no longer rendered on dashboards. The station latitude and longitude remain visible above the map because they provide useful location information.
+
+
+### v0.22.32 dashboard information controls and setup cleanup
+- Added per-station, per-dashboard checkboxes for showing station code, station coordinates, last received time, and local time at the top of dashboards. Existing dashboards default to showing all four items.
+- Station Name remains the page-level heading and is not optional.
+- Removed the redundant “Select Station” button from Dashboard Setup; changing the station dropdown continues to switch stations immediately.
+- Updated the Display Title help text to explain that titles identify/manage displays within SLIM and are shown publicly only for certain display types.
+
+
+### v0.22.32 Dashboard Setup correction
+Corrected two regressions introduced with the Dashboard Information controls. The station selector now uses the same proven automatic form-submit behavior as Station Management and no longer depends on an inline JavaScript listener. The Dashboard Information form now uses SLIM's existing dashboard CSRF token field rather than an unavailable helper function, allowing the four visibility checkboxes and save button to render and save normally.
+
+
+### v0.22.32 per-variable station quality control
+SLIM now supports optional quality control for individual numeric station variables. Administrators can enable QC independently for each variable, define optional minimum and maximum acceptable values, and define instrument diagnostic/error values with descriptive meanings. For QC-enabled variables, SLIM preserves the value exactly as normalized from the incoming payload in a companion `<field>_raw` column. Values matching a configured diagnostic code or falling outside the configured acceptable range are stored as `NULL` in the normal station field, while `<field>_qc` records `valid`, `missing`, `diagnostic`, `out_of_range`, or `legacy_unchecked`. Diagnostic codes are evaluated before range limits. Public dashboards and normal exports continue to use the normal station field, and outbound webhook payloads use the quality-controlled value, so rejected sensor values are forwarded as JSON `null` rather than as environmental observations. When QC companion columns are first added, SLIM creates its normal station CSV/configuration backup before altering the table; existing values are copied into the raw column and marked `legacy_unchecked` rather than being retroactively rejected.
+
+
+### v0.22.32 public-dashboard accessibility improvements
+Public scientific graphics now provide nonvisual accessible names and descriptions without adding visible dashboard text. Station maps are exposed as labeled regions identifying the station location. Spatial/profile SVG plots use an accessible title and dynamically generated description of the profile, while recent directional SVG displays describe the latest magnitude and bearing and note that older observations are shown with reduced emphasis. These descriptions are available to assistive technology but do not add visual clutter to the dashboard.
+
+Very small public-facing dashboard text was also increased. Meaningful labels and metadata that had been rendered at approximately 10–12 px—including profile statistic labels, directional annotations, display notes, date-range guidance, local-time information, gauge titles, and related secondary text—now use larger sizes, generally 13–14 px or greater.
+
+
+### v0.22.32 Dygraphs accessibility
+Time-series displays now provide an accessible HTML wrapper around each Dygraphs visualization. The visible display title labels the chart region, while a visually hidden description identifies the plotted series, observation period, axes when configured, and any systematic downsampling. A supplementary visually hidden HTML table summarizes each plotted series with its units, plotted observation count, minimum, maximum, and latest plotted value. The Dygraphs canvas itself is hidden from assistive technology to avoid exposing an unstructured graphical control in addition to the accessible equivalent. These additions do not add visible text or change the visual appearance of public dashboards.
+
+
+### v0.22.32 accessibility rendering correction
+Corrected the Dygraphs accessibility description code to use SLIM's existing `$displayTimezone` object. v0.22.31 incorrectly referenced an undefined `$tz` variable while rendering time-series accessibility metadata. On pages containing a time-series display this could stop PHP rendering before the dashboard initialization JavaScript was emitted, leaving Leaflet maps and JavaScript/SVG visualizations blank. The accessibility wrapper and supplementary time-series summary remain enabled.

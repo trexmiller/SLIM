@@ -155,7 +155,7 @@ button{padding:9px 15px;border:0;border-radius:5px;background:#222;color:#fff;cu
 <form method="post" id="site-config-form">
 <input type="hidden" name="csrf" value="<?= h($_SESSION['site_csrf']) ?>">
 
-<label>Public site title <?= slim_help_button('Public site title','Title shown on the public SLIM home page above the monitoring-network information.') ?></label>
+<label>Site Title <?= slim_help_button('Site Title','Name shown at the top of the public SLIM home page and used as the browser page title.') ?></label>
 <input type="text" name="site_title" value="<?= h((string)$config['site_title']) ?>" required>
 
 <label>Introduction / site description <?= slim_help_button('Introduction / site description','Optional plain-text introduction shown on the public home page. Describe the network, purpose, participating organizations, or important context for the data.') ?></label>

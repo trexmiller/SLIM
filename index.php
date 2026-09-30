@@ -307,9 +307,29 @@ footer{
 }
 
 .slim-version-footer{font-size:12px}
+
+/* v0.22.7: larger public-facing typography. */
+body{font-size:18px}
+.org-name{font-size:24px}
+.site-title{font-size:37px}
+.intro{font-size:19px}
+.links a{font-size:16px}
+.section-title{font-size:23px}
+.station-name{font-size:20px}
+.station-code,.station-coords{font-size:14px}
+.station-link{font-size:16px}
+footer,.slim-version-footer{font-size:14px}
+@media(max-width:700px){
+    body{font-size:17px}
+    .site-title{font-size:31px}
+}
+
+.skip-link{position:fixed;left:12px;top:8px;z-index:100000;padding:10px 14px;border-radius:6px;background:#fff;color:#111;font-weight:700;text-decoration:none;clip-path:inset(50%);width:1px;height:1px;overflow:hidden;white-space:nowrap}
+.skip-link:focus,.skip-link:focus-visible{clip-path:none;width:auto;height:auto;overflow:visible;white-space:normal;outline:3px solid currentColor;outline-offset:3px}
 </style>
 </head>
 <body>
+<a class="skip-link" href="#main-content">Skip to main content</a>
 
 <div class="wrap">
 
@@ -346,6 +366,7 @@ footer{
 </nav>
 </header>
 
+<main id="main-content" tabindex="-1">
 <?php if(trim((string)$site['intro_text'])!==''): ?>
 <div class="intro">
 <?= h((string)$site['intro_text']) ?>
@@ -389,6 +410,8 @@ footer{
 <div class="empty">No stations are currently published.</div>
 <?php endif; ?>
 <?php endif; ?>
+
+</main>
 
 <footer class="slim-version-footer"><?= h(slim_footer_text()) ?></footer>
 

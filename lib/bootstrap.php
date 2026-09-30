@@ -645,9 +645,19 @@ function slim_sanitize_content_html(string $html): string {
     $html=trim($html);
     if($html==='') return '';
 
+    // Recover WYSIWYG markup that may have been stored as escaped text by an
+    // earlier editor revision. It is decoded only before passing through the
+    // same strict sanitizer below.
+    if (
+        strpos($html,'&lt;') !== false &&
+        preg_match('/&lt;\/?(?:span|b|strong|i|em|u|p|br|ul|ol|li|sub|sup|a)\b/i',$html)
+    ) {
+        $html=html_entity_decode($html,ENT_QUOTES|ENT_HTML5,'UTF-8');
+    }
+
     // Constrained public-page HTML: formatting, links, and images only.
     // Scriptable/embedded content is never allowed.
-    $allowedTags='<p><br><h2><h3><h4><strong><b><em><i><u><ul><ol><li><blockquote><a><img>';
+    $allowedTags='<p><br><h2><h3><h4><strong><b><em><i><u><ul><ol><li><blockquote><a><img><span><sub><sup>';
     $html=strip_tags($html,$allowedTags);
 
     if(!class_exists('DOMDocument')) {
@@ -672,6 +682,7 @@ function slim_sanitize_content_html(string $html): string {
         $allowed=[];
         if($tag==='a') $allowed=['href','title'];
         if($tag==='img') $allowed=['src','alt','title','class'];
+        if($tag==='span') $allowed=['class'];
 
         $remove=[];
         foreach($el->attributes ?? [] as $attr) {
@@ -684,12 +695,51 @@ function slim_sanitize_content_html(string $html): string {
             if(!preg_match('#^(https?://|mailto:|/|\\.\\.?/)#i',$url)) $el->removeAttribute('href');
             else { $el->setAttribute('rel','noopener'); }
         }
+        if($tag==='span' && $el->hasAttribute('class')) {
+            $class=trim($el->getAttribute('class'));
+            if(!in_array($class,['slim-text-normal','slim-text-large','slim-text-xlarge'],true)) {
+                $el->removeAttribute('class');
+            }
+        }
         if($tag==='img' && $el->hasAttribute('src')) {
             $url=trim($el->getAttribute('src'));
             if(!preg_match('#^(https?://|/|\\.\\.?/)#i',$url)) $el->removeAttribute('src');
             $class=trim($el->getAttribute('class'));
             if(!in_array($class,['slim-img-third','slim-img-half','slim-img-full'],true)) {
                 $el->removeAttribute('class');
+            }
+        }
+    }
+
+    // Collapse legacy chains such as Large > Extra large > Large when the
+    // outer size span contains only another size span. The innermost explicit
+    // choice is the effective formatting and is retained.
+    $sizeClasses=['slim-text-normal','slim-text-large','slim-text-xlarge'];
+    $changed=true;
+    while($changed) {
+        $changed=false;
+        $spans=[];
+        foreach($root->getElementsByTagName('span') as $span) $spans[]=$span;
+        foreach($spans as $span) {
+            $class=$span->getAttribute('class');
+            if(!in_array($class,$sizeClasses,true)) continue;
+
+            $meaningful=[];
+            foreach($span->childNodes as $child) {
+                if($child->nodeType===XML_TEXT_NODE && trim($child->nodeValue)==='') continue;
+                $meaningful[]=$child;
+            }
+            if(count($meaningful)!==1 || $meaningful[0]->nodeType!==XML_ELEMENT_NODE) continue;
+
+            $child=$meaningful[0];
+            if(strtolower($child->nodeName)!=='span') continue;
+            if(!in_array($child->getAttribute('class'),$sizeClasses,true)) continue;
+
+            $parent=$span->parentNode;
+            if($parent) {
+                $parent->replaceChild($child,$span);
+                $changed=true;
+                break;
             }
         }
     }
@@ -1404,7 +1454,7 @@ function slim_admin_help_assets(): string {
     return <<<'HTML'
 <style>
 .slim-help-button{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:6px;padding:0;border:1px solid #888;border-radius:50%;background:#fff;color:#333;font:700 13px/1 Arial,sans-serif;vertical-align:middle;cursor:pointer}
-.slim-help-button:hover,.slim-help-button:focus{border-color:#222;background:#f2f2f2}
+.slim-help-button:hover,.slim-help-button:focus{border-color:#222;background:#f2f2f2}.slim-help-button:focus-visible,.slim-help-close:focus-visible{outline:3px solid #1b66c9;outline-offset:2px}
 .slim-help-modal[hidden]{display:none!important}
 .slim-help-modal{position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(0,0,0,.48)}
 .slim-help-dialog{width:min(560px,100%);max-height:80vh;overflow:auto;background:#fff;color:#222;border-radius:10px;box-shadow:0 18px 60px rgba(0,0,0,.28);padding:22px 24px}
@@ -1430,7 +1480,7 @@ function slim_admin_help_assets(): string {
  function openHelp(btn){last=btn;title.textContent=btn.dataset.helpTitle||'Help';body.textContent=btn.dataset.helpText||'';modal.hidden=false;modal.setAttribute('aria-hidden','false');close.focus();}
  function closeHelp(){modal.hidden=true;modal.setAttribute('aria-hidden','true');if(last)last.focus();}
  document.addEventListener('click',function(e){const btn=e.target.closest('.slim-help-button');if(btn){openHelp(btn);return;}if(e.target===modal||e.target===close)closeHelp();});
- document.addEventListener('keydown',function(e){if(e.key==='Escape'&&!modal.hidden)closeHelp();});
+ document.addEventListener('keydown',function(e){if(modal.hidden)return;if(e.key==='Escape'){closeHelp();return;}if(e.key==='Tab'){const f=[...modal.querySelectorAll('button,[href],input,select,textarea,[tabindex]:not([tabindex=\"-1\"])')].filter(el=>!el.disabled);if(!f.length)return;const first=f[0],lastEl=f[f.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();lastEl.focus();}else if(!e.shiftKey&&document.activeElement===lastEl){e.preventDefault();first.focus();}}});
 })();
 
 // Keep the Admin PHP session active while an Admin page remains open.

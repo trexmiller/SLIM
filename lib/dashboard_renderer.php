@@ -597,6 +597,51 @@ try {
                     return ($a['position'] < $b['position']) ? -1 : 1;
                 });
 
+                // Color limits are independent of the current profile. Any blank
+                // bound is derived from the full available dataset across all
+                // configured profile variables.
+                $configuredColorMin = isset($display['color_min']) && $display['color_min'] !== null
+                    ? nval($display['color_min'])
+                    : null;
+                $configuredColorMax = isset($display['color_max']) && $display['color_max'] !== null
+                    ? nval($display['color_max'])
+                    : null;
+                $dataColorMin = null;
+                $dataColorMax = null;
+
+                if ($configuredColorMin === null || $configuredColorMax === null) {
+                    foreach ($points as $point) {
+                        $rangeField = $point['field'] ?? '';
+                        if ($rangeField === '' || !isset($station['fields'][$rangeField])) continue;
+                        $safeRangeField = lakestat_safe_identifier($rangeField);
+                        $rangeSql = "SELECT MIN(`{$safeRangeField}`) AS min_value,
+                                            MAX(`{$safeRangeField}`) AS max_value
+                                     FROM `{$table}`
+                                     WHERE `{$safeRangeField}` IS NOT NULL";
+                        $rangeRow = $pdo->query($rangeSql)->fetch();
+                        if (!$rangeRow) continue;
+                        $fieldMin = nval($rangeRow['min_value'] ?? null);
+                        $fieldMax = nval($rangeRow['max_value'] ?? null);
+                        if ($fieldMin !== null && ($dataColorMin === null || $fieldMin < $dataColorMin)) $dataColorMin = $fieldMin;
+                        if ($fieldMax !== null && ($dataColorMax === null || $fieldMax > $dataColorMax)) $dataColorMax = $fieldMax;
+                    }
+                }
+
+                $colorMin = $configuredColorMin !== null ? $configuredColorMin : $dataColorMin;
+                $colorMax = $configuredColorMax !== null ? $configuredColorMax : $dataColorMax;
+
+                // Safe fallback for an empty or constant dataset.
+                if ($colorMin === null || $colorMax === null) {
+                    $currentValues = array_column($profilePoints,'value');
+                    if ($currentValues) {
+                        if ($colorMin === null) $colorMin = min($currentValues);
+                        if ($colorMax === null) $colorMax = max($currentValues);
+                    }
+                }
+                if ($colorMin !== null && $colorMax !== null && $colorMin >= $colorMax) {
+                    $colorMax = $colorMin + 1.0;
+                }
+
                 $coordinateLabel = !empty($display['coordinate_label'])
                     ? $display['coordinate_label']
                     : 'Position';
@@ -606,7 +651,9 @@ try {
                     'value_units' => $valueUnits,
                     'coordinate_label' => $coordinateLabel,
                     'coordinate_units' => $display['coordinate_units'] ?? '',
-                    'reverse_y' => strtolower(trim($coordinateLabel)) === 'depth'
+                    'reverse_y' => strtolower(trim($coordinateLabel)) === 'depth',
+                    'color_min' => $colorMin,
+                    'color_max' => $colorMax
                 ];
             }
 
@@ -632,11 +679,12 @@ try {
                 );
 
                 $sql = "SELECT `{$directionField}`, `{$magnitudeField}`,
-                               COALESCE(`observed_at`,`received_at`) AS event_time
+                               `observed_at` AS event_time
                         FROM `{$table}`
                         WHERE `{$directionField}` IS NOT NULL
                           AND `{$magnitudeField}` IS NOT NULL
-                        ORDER BY COALESCE(`observed_at`,`received_at`) DESC
+                          AND `observed_at` IS NOT NULL
+                        ORDER BY `observed_at` DESC
                         LIMIT {$recentN}";
 
                 $rows = $pdo->query($sql)->fetchAll();
@@ -661,13 +709,22 @@ try {
                 $magMeta = $station['fields'][$magnitudeField];
                 $dirMeta = $station['fields'][$directionField];
 
+                $validTimes = [];
+                foreach ($points as $point) {
+                    if (!empty($point['time'])) $validTimes[] = $point['time'];
+                }
+                sort($validTimes);
+
                 $common = [
                     'points' => $points, // newest first
                     'direction_label' => !empty($dirMeta['label']) ? $dirMeta['label'] : $directionField,
                     'magnitude_label' => !empty($magMeta['label']) ? $magMeta['label'] : $magnitudeField,
                     'magnitude_units' => !empty($display['magnitude_units'])
                         ? $display['magnitude_units']
-                        : ($magMeta['units'] ?? '')
+                        : ($magMeta['units'] ?? ''),
+                    'observed_start' => $validTimes[0] ?? '',
+                    'observed_end' => !empty($validTimes) ? $validTimes[count($validTimes)-1] : '',
+                    'observation_count' => count($points)
                 ];
 
                 if ($type === 'polar') {
@@ -682,6 +739,12 @@ try {
 } catch (Throwable $e) {
     $error = $e->getMessage();
 }
+
+$headerInfo=is_array($displayConfig['header_info'] ?? null) ? $displayConfig['header_info'] : [];
+$showStationCode=!array_key_exists('show_station_code',$headerInfo) || !empty($headerInfo['show_station_code']);
+$showCoordinates=!array_key_exists('show_coordinates',$headerInfo) || !empty($headerInfo['show_coordinates']);
+$showLastReceived=!array_key_exists('show_last_received',$headerInfo) || !empty($headerInfo['show_last_received']);
+$showLocalTime=!array_key_exists('show_local_time',$headerInfo) || !empty($headerInfo['show_local_time']);
 
 $gaugeDisplays = [];
 $otherDisplays = [];
@@ -739,6 +802,15 @@ html,body {
     margin:0;
     padding:0;
 }
+
+
+:where(a,button,input,select,textarea,[tabindex]):focus-visible {
+    outline:3px solid var(--accent);
+    outline-offset:3px;
+}
+.skip-link{position:fixed;left:12px;top:8px;z-index:100000;padding:10px 14px;border-radius:7px;background:var(--navy-card);color:var(--text-prim);font-weight:700;text-decoration:none;clip-path:inset(50%);width:1px;height:1px;overflow:hidden;white-space:nowrap}
+.skip-link:focus,.skip-link:focus-visible{clip-path:none;width:auto;height:auto;overflow:visible;white-space:normal;outline:3px solid currentColor;outline-offset:3px}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}.pulse-dot{animation:none!important}}
 
 body {
     background:var(--navy);
@@ -832,7 +904,7 @@ body {
     background:rgba(0,194,255,0.10);
     color:var(--accent);
     font-family:'IBM Plex Mono',monospace;
-    font-size:12px;
+    font-size:13px;
 }
 
 .pulse-dot {
@@ -923,6 +995,12 @@ body {
     color:var(--text-sec);
     line-height:1.7;
 }
+.text-display-copy p{margin:.35em 0 .75em}
+.text-display-copy ul,.text-display-copy ol{margin:.45em 0 .8em;padding-left:1.6em}
+.text-display-copy a{color:var(--accent)}
+.text-display-copy .slim-text-normal{font-size:20px}
+.text-display-copy .slim-text-large{font-size:26px}
+.text-display-copy .slim-text-xlarge{font-size:33px}
 
 
 /* Keep Highcharts wind-rose tooltips readable regardless of dashboard theme. */
@@ -947,20 +1025,20 @@ body {
 .date-range-panel{margin:0 0 24px;padding:14px 16px;border:1px solid var(--border-dim);border-radius:var(--radius);background:var(--navy-card)}
 .date-range-form{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap}
 .date-range-field{min-width:165px}
-.date-range-field label{display:block;margin-bottom:4px;color:var(--text-sec);font-size:12px}
+.date-range-field label{display:block;margin-bottom:4px;color:var(--text-sec);font-size:14px}
 .date-range-field input[type="date"]{width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:7px;background:var(--navy);color:var(--text-prim);font:inherit}
 .date-range-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .date-range-actions button,.date-reset{display:inline-flex;align-items:center;min-height:38px;padding:7px 12px;border:1px solid var(--border);border-radius:7px;background:var(--navy-light);color:var(--accent);text-decoration:none;font:inherit;cursor:pointer}
 .date-range-actions button:hover,.date-reset:hover{border-color:var(--accent)}
-.date-range-hint{margin-top:8px;color:var(--text-mute);font-size:12px}
+.date-range-hint{margin-top:8px;color:var(--text-mute);font-size:13px}
 .date-range-error{margin-top:8px;color:#e07070;font-size:13px}
 
 .section-label {
     margin:28px 0 14px;
     color:var(--text-mute);
-    font-size:11px;
+    font-size:13px;
     font-weight:600;
-    letter-spacing:.12em;
+    letter-spacing:.10em;
     text-transform:uppercase;
 }
 
@@ -1028,9 +1106,9 @@ body {
 .gauge-title {
     margin-bottom:8px;
     color:var(--text-sec);
-    font-size:12px;
+    font-size:14px;
     text-transform:uppercase;
-    letter-spacing:.08em;
+    letter-spacing:.06em;
 }
 
 .gauge-ring {
@@ -1067,24 +1145,27 @@ body {
 }
 
 .gauge-units {
-    color:var(--text-sec);
-    font-size:11px;
+    color:#fff;
+    font-size:15px;
+    font-weight:500;
 }
 
 .gauge-note {
     margin-top:8px;
-    color:var(--text-mute);
-    font-size:11px;
+    color:#fff;
+    font-size:14px;
+    font-weight:500;
 }
 
 .gauge-scale-labels {
     width:100%;
     display:flex;
     justify-content:space-between;
-    color:var(--text-mute);
-    font-size:10px;
+    color:#fff;
+    font-size:14px;
+    font-weight:500;
     font-family:'IBM Plex Mono',monospace;
-    margin-top:5px;
+    margin-top:6px;
 }
 
 .gauge-semicircle-wrap {
@@ -1171,14 +1252,16 @@ body {
 }
 
 .gauge-numeric-units {
-    color:var(--text-sec);
-    font-size:14px;
-    margin-top:4px;
+    color:#fff;
+    font-size:17px;
+    font-weight:500;
+    margin-top:5px;
 }
 
 .gauge-range-note {
-    color:var(--text-mute);
-    font-size:10px;
+    color:#fff;
+    font-size:14px;
+    font-weight:500;
     margin-top:10px;
     font-family:'IBM Plex Mono',monospace;
 }
@@ -1215,11 +1298,23 @@ body {
     font-weight:600;
 }
 
+.slim-visually-hidden {
+    position:absolute !important;
+    width:1px !important;
+    height:1px !important;
+    padding:0 !important;
+    margin:-1px !important;
+    overflow:hidden !important;
+    clip:rect(0,0,0,0) !important;
+    white-space:nowrap !important;
+    border:0 !important;
+}
+
 .display-note {
     margin-top:2px;
     color:var(--text-sec);
     font-family:'IBM Plex Mono',monospace;
-    font-size:11px;
+    font-size:13px;
 }
 
 .display-body {
@@ -1270,11 +1365,20 @@ body {
     margin:0 auto;
 }
 
+
+.profile-legend-value {
+    color:#fff;
+    font-size:13px;
+    font-family:'IBM Plex Mono',monospace;
+    line-height:1.2;
+    margin:5px 0;
+}
 .profile-legend-title {
-    color:var(--text-sec);
-    font-size:11px;
+    color:#fff;
+    font-size:14px;
+    font-weight:500;
     text-transform:uppercase;
-    letter-spacing:.08em;
+    letter-spacing:.06em;
     margin-bottom:8px;
 }
 
@@ -1305,9 +1409,9 @@ body {
 .stat-chip span {
     display:block;
     color:var(--text-sec);
-    font-size:10px;
+    font-size:13px;
     text-transform:uppercase;
-    letter-spacing:.08em;
+    letter-spacing:.06em;
 }
 
 .stat-chip strong {
@@ -1339,7 +1443,7 @@ body {
     display:block;
     margin-top:3px;
     color:var(--text-sec);
-    font-size:11px;
+    font-size:13px;
 }
 
 .direction-svg {
@@ -1358,7 +1462,7 @@ body {
     padding:0 18px 16px;
     color:var(--text-sec);
     font-family:'IBM Plex Mono',monospace;
-    font-size:11px;
+    font-size:13px;
 }
 
 .vector-key {
@@ -1403,7 +1507,7 @@ body {
 .debug {
     margin-top:8px;
     color:var(--text-mute);
-    font-size:11px;
+    font-size:13px;
 }
 
 
@@ -1412,7 +1516,7 @@ body {
     padding-top:16px;
     border-top:1px solid var(--border-dim);
     color:var(--text-mute);
-    font-size:12px;
+    font-size:13px;
     text-align:center;
 }
 
@@ -1444,9 +1548,34 @@ body {
         grid-template-columns:1fr 1fr;
     }
 }
+
+/* v0.22.7: public dashboards use a larger type scale. Health/admin dashboards
+   intentionally retain their denser administrative typography. */
+.station-page-title{margin:0 0 22px;color:var(--text-prim);font-size:32px;line-height:1.15;font-weight:700}
+body.slim-public-dashboard{font-size:18px}
+body.slim-public-dashboard .site-title{font-size:32px}
+body.slim-public-dashboard .organization-name{font-size:24px}
+body.slim-public-dashboard .site-subtitle{font-size:16px}
+body.slim-public-dashboard .local-time-row,
+body.slim-public-dashboard .refresh-badge{font-size:14px}
+body.slim-public-dashboard .links-row a,
+body.slim-public-dashboard .public-nav a{font-size:16px}
+body.slim-public-dashboard .text-display-header{font-size:24px}
+body.slim-public-dashboard .date-range-field label,
+body.slim-public-dashboard .date-range-hint{font-size:14px}
+body.slim-public-dashboard .date-range-error{font-size:16px}
+body.slim-public-dashboard .section-label{font-size:13px}
+body.slim-public-dashboard .section-title{font-size:22px}
+body.slim-public-dashboard .display-note{font-size:14px}
+body.slim-public-dashboard .slim-version-footer{font-size:14px}
+@media(max-width:700px){
+    body.slim-public-dashboard{font-size:17px}
+}
+
 </style>
 </head>
-<body>
+<body class="<?= $slimHealthDashboard ? 'slim-health-dashboard' : 'slim-public-dashboard' ?>">
+<a class="skip-link" href="#main-content">Skip to main content</a>
 
 <div class="page-wrapper">
 
@@ -1472,35 +1601,44 @@ body {
             <?php if($logoMode==='logo_and_name' && $organizationName!==''): ?>
             <div class="organization-name"><?= h($organizationName) ?></div>
             <?php elseif($logoMode==='title_only'): ?>
-            <h1 class="site-title"><?= $station ? h($station['name']).($slimHealthDashboard ? ' — Station Health' : '') : ($slimHealthDashboard ? 'SLIM Station Health' : 'SLIM') ?></h1>
+            <div class="site-title"><?= $slimHealthDashboard ? 'SLIM Station Health' : 'SLIM' ?></div>
             <?php endif; ?>
         </div>
 
         <?php if ($station): ?>
+        <?php if($slimHealthDashboard || $showStationCode || ($showCoordinates && isset($station['latitude'],$station['longitude']))): ?>
         <div class="site-subtitle">
-            <?= $slimHealthDashboard ? 'Private station health dashboard &nbsp;|&nbsp; ' : '' ?>Station: <?= h($station['code']) ?>
-            <?php if (isset($station['latitude'],$station['longitude'])): ?>
-            &nbsp;|&nbsp;
-            <?= h(number_format((float)$station['latitude'],4)) ?>,
-            <?= h(number_format((float)$station['longitude'],4)) ?>
-            <?php endif; ?>
+            <?php
+            $subtitleParts=[];
+            if($slimHealthDashboard) $subtitleParts[]='Private station health dashboard';
+            if($showStationCode) $subtitleParts[]='Station: '.h((string)$station['code']);
+            if($showCoordinates && isset($station['latitude'],$station['longitude'])) {
+                $subtitleParts[]=h(number_format((float)$station['latitude'],4).', '.number_format((float)$station['longitude'],4));
+            }
+            echo implode(' &nbsp;|&nbsp; ',$subtitleParts);
+            ?>
         </div>
+        <?php endif; ?>
 
         <div class="refresh-badge<?= $stationOnline ? '' : ' offline' ?>">
             <span class="pulse-dot"></span>
             <?= $stationOnline ? 'ONLINE' : 'OFFLINE' ?>
-            <?php if ($latestDisplayTime): ?>
-            &nbsp;&bull;&nbsp; Last received <?= h($latestDisplayTime) ?>
-            <?php else: ?>
-            &nbsp;&bull;&nbsp; No data received
+            <?php if($showLastReceived): ?>
+                <?php if ($latestDisplayTime): ?>
+                &nbsp;&bull;&nbsp; Last received <?= h($latestDisplayTime) ?>
+                <?php else: ?>
+                &nbsp;&bull;&nbsp; No data received
+                <?php endif; ?>
             <?php endif; ?>
         </div>
 
+        <?php if($showLocalTime): ?>
         <div class="local-time-row">
             <span>Local time:</span>
             <strong id="slim-local-clock">--</strong>
             <span class="timezone-name"><?= h((string)$system['timezone']) ?></span>
         </div>
+        <?php endif; ?>
         <?php endif; ?>
     </div>
 
@@ -1516,10 +1654,15 @@ body {
     </form>
     <?php endif; ?>
 </header>
+<main id="main-content" tabindex="-1">
 
 <div class="public-nav">
 <a href="<?= h($slimDashboardAllStationsHref) ?>">&larr; All Stations</a>
 </div>
+
+<?php if ($station): ?>
+<h1 class="station-page-title"><?= h((string)($station['name'] ?? $stationCode)) ?><?= $slimHealthDashboard ? ' — Station Health' : '' ?></h1>
+<?php endif; ?>
 
 <?php if ($error): ?>
 <div class="error"><?= h($error) ?></div>
@@ -1568,7 +1711,10 @@ $type=$display['type'] ?? '';
         <?php endif; ?>
 
         <?php if(trim((string)($display['body_text'] ?? ''))!==''): ?>
-        <div class="text-display-copy"><?= nl2br(h((string)$display['body_text'])) ?></div>
+        <div class="text-display-copy"><?php
+            $customBody=(string)$display['body_text'];
+            echo preg_match('/<[^>]+>/', $customBody) ? slim_sanitize_content_html($customBody) : nl2br(h($customBody));
+        ?></div>
         <?php endif; ?>
     </div>
 </div>
@@ -1578,7 +1724,7 @@ $type=$display['type'] ?? '';
     <div class="display-header">
         <div>
             <div class="display-title"><?= h($display['title'] ?? 'Select Date Range') ?></div>
-            <div class="display-note">Choose up to <?= (int)$maxPlotDays ?> calendar days for all time-series plots<?= $slimHealthDashboard ? '; health plots use all observations and large ranges may load slowly' : '' ?></div>
+
         </div>
     </div>
     <div class="display-body">
@@ -1603,7 +1749,12 @@ $type=$display['type'] ?? '';
                 </div>
             </form>
             <div class="date-range-hint">
-                Calendar dates use <?= h((string)$system['timezone']) ?>. Maximum range: <?= (int)$maxPlotDays ?> days.
+                <?php if($slimHealthDashboard): ?>
+                Choose up to <?= (int)$maxPlotDays ?> calendar days. Health plots use all observations; large ranges may load slowly.
+                <?php else: ?>
+                Choose up to <?= (int)$maxPlotDays ?> calendar days. Large datasets are automatically downsampled across the selected period to limit the number of points displayed.
+                <?php endif; ?>
+                Calendar dates use <?= h((string)$system['timezone']) ?>.
             </div>
             <?php if($dateRangeError!==''): ?>
             <div class="date-range-error"><?= h($dateRangeError) ?></div>
@@ -1688,9 +1839,6 @@ if($imagePath!==''){
 }
 ?>
 <div class="display-card <?= h(display_width_class($display)) ?>">
-    <div class="display-header">
-        <div><div class="display-title"><?= h($display['title'] ?? 'Station Photo') ?></div></div>
-    </div>
     <div class="display-body">
         <?php if($imagePath!==''): ?>
         <img
@@ -1712,7 +1860,6 @@ if($imagePath!==''){
 <div class="display-card <?= h(display_width_class($display)) ?>">
     <div class="display-header">
         <div>
-            <div class="display-title"><?= h($display['title'] ?? 'Station Location') ?></div>
             <div class="display-note">
                 <?= h(number_format((float)$station['latitude'],4)) ?>,
                 <?= h(number_format((float)$station['longitude'],4)) ?>
@@ -1724,6 +1871,8 @@ if($imagePath!==''){
             id="map-<?= h($id) ?>"
             class="map-display"
             style="height:<?= (int)$mapHeight ?>px"
+            role="region"
+            aria-label="<?= h('Map showing the location of '.($station['name'] ?? $station['code'])) ?>"
         ></div>
     </div>
 </div>
@@ -1770,11 +1919,27 @@ $delta=($first&&$last)?$first['value']-$last['value']:null;
 
     <div class="display-body profile-body">
         <div>
-            <svg id="profile-svg-<?= h($id) ?>" class="profile-svg" viewBox="0 0 560 610"></svg>
+            <svg id="profile-svg-<?= h($id) ?>" class="profile-svg" viewBox="0 0 560 610"
+                 role="img"
+                 aria-labelledby="profile-title-<?= h($id) ?> profile-desc-<?= h($id) ?>">
+                <title id="profile-title-<?= h($id) ?>"><?= h(($display['title'] ?? 'Current Profile').' chart') ?></title>
+                <desc id="profile-desc-<?= h($id) ?>"><?php
+                    $profileDesc='Profile containing '.count($pts).' observations';
+                    if($first && $last) {
+                        $profileDesc.=', from '.number_format((float)$first['value'],1).' '.$source['value_units']
+                            .' at '.number_format((float)$first['position'],1).' '.$source['coordinate_units']
+                            .' to '.number_format((float)$last['value'],1).' '.$source['value_units']
+                            .' at '.number_format((float)$last['position'],1).' '.$source['coordinate_units'];
+                    }
+                    echo h($profileDesc.'.');
+                ?></desc>
+            </svg>
         </div>
         <div class="profile-legend">
             <div class="profile-legend-title"><?= h($source['value_units'] ?: 'Value') ?></div>
+            <?php if($source['color_max'] !== null): ?><div class="profile-legend-value"><?= h(number_format((float)$source['color_max'],1)) ?></div><?php endif; ?>
             <div class="profile-gradient"></div>
+            <?php if($source['color_min'] !== null): ?><div class="profile-legend-value"><?= h(number_format((float)$source['color_min'],1)) ?></div><?php endif; ?>
         </div>
     </div>
     <?php else: ?>
@@ -1817,7 +1982,16 @@ $current=count($pts)?$pts[0]:null;
 
     <?php if($current): ?>
     <div class="display-body">
-        <svg id="direction-svg-<?= h($id) ?>" class="direction-svg" viewBox="0 0 500 410"></svg>
+        <svg id="direction-svg-<?= h($id) ?>" class="direction-svg" viewBox="0 0 500 410"
+             role="img"
+             aria-labelledby="direction-title-<?= h($id) ?> direction-desc-<?= h($id) ?>">
+            <title id="direction-title-<?= h($id) ?>"><?= h(($display['title'] ?? 'Current Direction').' chart') ?></title>
+            <desc id="direction-desc-<?= h($id) ?>"><?= h(
+                'Latest observation: '.number_format((float)$current['magnitude'],1).' '.$source['magnitude_units']
+                .' toward '.cardinal_direction((float)$current['direction']).', '
+                .number_format((float)$current['direction'],0).' degrees. Older observations are also shown with reduced emphasis.'
+            ) ?></desc>
+        </svg>
     </div>
     <div class="vector-footer">
         <span class="vector-key"><span class="vector-key-dot"></span>Latest bearing</span>
@@ -1831,34 +2005,91 @@ $current=count($pts)?$pts[0]:null;
 <?php elseif($type==='line' && isset($lineData[$id])): ?>
 <?php
 $pointCount=0;
+$accessibleSeries=[];
+$allTimes=[];
 foreach($lineData[$id]['datasets'] as $ds){
-    $pointCount+=count($ds['points']);
+    $seriesPoints=$ds['points'] ?? [];
+    $pointCount+=count($seriesPoints);
+    $values=[];
+    foreach($seriesPoints as $point){
+        if(isset($point['x'])) $allTimes[]=(int)$point['x'];
+        if(isset($point['y']) && is_numeric($point['y'])) $values[]=(float)$point['y'];
+    }
+    $accessibleSeries[]=[
+        'label'=>(string)($ds['label'] ?? $ds['field'] ?? 'Series'),
+        'units'=>(string)($ds['units'] ?? ''),
+        'count'=>count($values),
+        'min'=>$values ? min($values) : null,
+        'max'=>$values ? max($values) : null,
+        'latest'=>$values ? $values[count($values)-1] : null
+    ];
+}
+$chartStart=$allTimes ? min($allTimes) : null;
+$chartEnd=$allTimes ? max($allTimes) : null;
+$chartTitle=(string)($display['title'] ?? 'Time Series');
+$seriesNames=array_map(fn($s)=>$s['label'],$accessibleSeries);
+$chartDesc='Time-series chart';
+if($seriesNames) $chartDesc.=' showing '.implode(', ',$seriesNames);
+if($chartStart!==null && $chartEnd!==null){
+    $chartDesc.='. Displayed observations run from '
+        .(new DateTimeImmutable('@'.(int)floor($chartStart/1000)))->setTimezone($displayTimezone)->format('M j, Y g:i A')
+        .' through '
+        .(new DateTimeImmutable('@'.(int)floor($chartEnd/1000)))->setTimezone($displayTimezone)->format('M j, Y g:i A');
+}
+$chartDesc.='. The horizontal axis represents observation date and time.';
+if(!empty($lineData[$id]['y_label'])) $chartDesc.=' Primary vertical axis: '.$lineData[$id]['y_label'].'.';
+if(!empty($lineData[$id]['y2_label'])) $chartDesc.=' Secondary vertical axis: '.$lineData[$id]['y2_label'].'.';
+if(!empty($lineData[$id]['downsampled'])){
+    $chartDesc.=' The visual plot is systematically sampled from '.number_format((int)$lineData[$id]['source_row_count']).' source observations; values are not averaged.';
 }
 ?>
-<div class="display-card <?= h(display_width_class($display)) ?>">
+<div class="display-card <?= h(display_width_class($display)) ?>"
+     role="region"
+     aria-labelledby="line-title-<?= h($id) ?>"
+     aria-describedby="line-desc-<?= h($id) ?>">
     <div class="display-header">
         <div>
-            <div class="display-title"><?= h($display['title'] ?? 'Time Series') ?></div>
+            <div class="display-title" id="line-title-<?= h($id) ?>"><?= h($chartTitle) ?></div>
+            <p id="line-desc-<?= h($id) ?>" class="slim-visually-hidden"><?= h($chartDesc) ?></p>
+            <?php if($customDateRange || (!$slimHealthDashboard && !empty($lineData[$id]['downsampled'])) || $slimHealthDashboard): ?>
             <div class="display-note">
                 <?php if($customDateRange): ?>
                     <?= h($rangeStartLocal) ?> through <?= h($rangeEndLocal) ?>
-                <?php else: ?>
-                    Last <?= (int)($slimHealthDashboard ? max(1,(int)($system['graph_hours'] ?? 72)) : min((int)($display['hours'] ?? 24),(int)$publicLimits['max_dashboard_hours'])) ?> hours of available data
                 <?php endif; ?>
                 <?php if(!$slimHealthDashboard && !empty($lineData[$id]['downsampled'])): ?>
-                    &nbsp;|&nbsp; <?= number_format((int)$lineData[$id]['source_row_count']) ?> observations systematically sampled to <?= number_format((int)$lineData[$id]['row_count']) ?> plotted points; values are not averaged
+                    <?= $customDateRange ? '&nbsp;|&nbsp;' : '' ?><?= number_format((int)$lineData[$id]['source_row_count']) ?> observations systematically sampled to <?= number_format((int)$lineData[$id]['row_count']) ?> plotted points; values are not averaged
                 <?php elseif($slimHealthDashboard): ?>
-                    &nbsp;|&nbsp; full-resolution administrative view
+                    <?= $customDateRange ? '&nbsp;|&nbsp;' : '' ?>full-resolution administrative view
                 <?php endif; ?>
             </div>
+            <?php endif; ?>
         </div>
     </div>
 
     <div class="display-body">
         <?php if($pointCount>0): ?>
-        <div class="chart-wrap">
+        <div class="chart-wrap" aria-hidden="true">
             <div id="chart-<?= h($id) ?>" class="dygraph-target"></div>
         </div>
+
+        <table class="slim-visually-hidden">
+            <caption>Accessible summary of <?= h($chartTitle) ?></caption>
+            <thead>
+                <tr><th scope="col">Series</th><th scope="col">Units</th><th scope="col">Observations plotted</th><th scope="col">Minimum</th><th scope="col">Maximum</th><th scope="col">Latest plotted value</th></tr>
+            </thead>
+            <tbody>
+            <?php foreach($accessibleSeries as $series): ?>
+                <tr>
+                    <th scope="row"><?= h($series['label']) ?></th>
+                    <td><?= h($series['units']) ?></td>
+                    <td><?= number_format((int)$series['count']) ?></td>
+                    <td><?= $series['min']===null ? 'No value' : h(number_format((float)$series['min'],3)) ?></td>
+                    <td><?= $series['max']===null ? 'No value' : h(number_format((float)$series['max'],3)) ?></td>
+                    <td><?= $series['latest']===null ? 'No value' : h(number_format((float)$series['latest'],3)) ?></td>
+                </tr>
+            <?php endforeach; ?>
+            </tbody>
+        </table>
         <?php else: ?>
         <div class="notice">No numeric observations were found in this time window.</div>
         <?php endif; ?>
@@ -1870,13 +2101,31 @@ foreach($lineData[$id]['datasets'] as $ds){
     <div class="display-header">
         <div>
             <div class="display-title"><?= h($display['title'] ?? 'Polar Plot') ?></div>
-            <div class="display-note">Directional frequency by magnitude class</div>
         </div>
     </div>
 
     <div class="display-body">
         <?php if(count($polarData[$id]['points'])>0): ?>
         <div class="chart-wrap"><div id="polar-<?= h($id) ?>" class="highcharts-polar-target"></div></div>
+        <?php
+            $polarStart = $polarData[$id]['observed_start'] ?? '';
+            $polarEnd = $polarData[$id]['observed_end'] ?? '';
+            $polarCount = (int)($polarData[$id]['observation_count'] ?? count($polarData[$id]['points']));
+            $formatObserved = static function($value) {
+                if ($value === '') return '';
+                try {
+                    return (new DateTime($value))->format('M j, Y g:i A');
+                } catch (Throwable $e) {
+                    return (string)$value;
+                }
+            };
+        ?>
+        <?php if($polarStart !== '' && $polarEnd !== ''): ?>
+        <div class="display-note" style="margin-top:10px;text-align:center;">
+            <?= h($formatObserved($polarStart)) ?> – <?= h($formatObserved($polarEnd)) ?>
+            · <?= h((string)$polarCount) ?> observation<?= $polarCount === 1 ? '' : 's' ?>
+        </div>
+        <?php endif; ?>
         <?php else: ?>
         <div class="notice">No valid paired observations were available.</div>
         <?php endif; ?>
@@ -2179,8 +2428,10 @@ Object.keys(profileData).forEach(function(id){
     const values=points.map(p=>Number(p.value));
     const positions=points.map(p=>Number(p.position));
 
-    const minVal=Math.min.apply(null,values);
-    const maxVal=Math.max.apply(null,values);
+    const currentMin=Math.min.apply(null,values);
+    const currentMax=Math.max.apply(null,values);
+    const minVal=source.color_min===null || source.color_min===undefined ? currentMin : Number(source.color_min);
+    const maxVal=source.color_max===null || source.color_max===undefined ? currentMax : Number(source.color_max);
     const minPos=Math.min.apply(null,positions);
     const maxPos=Math.max.apply(null,positions);
 
@@ -2668,13 +2919,15 @@ Object.keys(polarData).forEach(function(id){
 </script>
 
 
+</main>
+
 <style>
 .slim-public-admin-link{
     margin:24px 0 12px;
     text-align:center;
-    font-size:11px;
-    line-height:1.2;
-    opacity:.55;
+    font-size:13px;
+    line-height:1.35;
+    opacity:.65;
 }
 .slim-public-admin-link a{
     color:inherit;

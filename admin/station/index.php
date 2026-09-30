@@ -391,6 +391,104 @@ try {
             $_GET['station']=$code;
         }
 
+        if ($action === 'save_variable_qc') {
+            $code=lakestat_station_code((string)($_POST['station'] ?? ''));
+            $station=lakestat_station_config($code);
+            $pdo=lakestat_db();
+            $table=lakestat_safe_identifier((string)$station['table']);
+
+            $enabled=is_array($_POST['qc_enabled'] ?? null) ? $_POST['qc_enabled'] : [];
+            $mins=is_array($_POST['qc_min'] ?? null) ? $_POST['qc_min'] : [];
+            $maxs=is_array($_POST['qc_max'] ?? null) ? $_POST['qc_max'] : [];
+            $diagnostics=is_array($_POST['qc_diagnostics'] ?? null) ? $_POST['qc_diagnostics'] : [];
+
+            $schemaChanges=[];
+            $newQc=[];
+
+            foreach($station['fields'] as $key=>$field) {
+                if(!empty($field['derived']) || ($field['type'] ?? 'number')==='text') continue;
+
+                $isEnabled=isset($enabled[$key]);
+                if(!$isEnabled) {
+                    if(isset($field['qc'])) $station['fields'][$key]['qc']['enabled']=false;
+                    continue;
+                }
+
+                $column=lakestat_safe_identifier((string)($field['column'] ?? $key));
+                if(strlen($column)>58) {
+                    throw new RuntimeException("Variable '{$key}' has a database column name too long to create QC companion columns.");
+                }
+
+                $rawMin=trim((string)($mins[$key] ?? ''));
+                $rawMax=trim((string)($maxs[$key] ?? ''));
+                if($rawMin!=='' && !is_numeric($rawMin)) throw new RuntimeException("QC minimum for '{$key}' must be numeric or blank.");
+                if($rawMax!=='' && !is_numeric($rawMax)) throw new RuntimeException("QC maximum for '{$key}' must be numeric or blank.");
+
+                $min=$rawMin==='' ? null : (float)$rawMin;
+                $max=$rawMax==='' ? null : (float)$rawMax;
+                if($min!==null && $max!==null && $min>$max) {
+                    throw new RuntimeException("QC minimum for '{$key}' cannot be greater than its maximum.");
+                }
+
+                $codes=[];
+                $lines=preg_split('/\R/',(string)($diagnostics[$key] ?? '')) ?: [];
+                foreach($lines as $line) {
+                    $line=trim($line);
+                    if($line==='') continue;
+                    $parts=preg_split('/\s*=\s*/',$line,2);
+                    $rawValue=trim((string)($parts[0] ?? ''));
+                    $meaning=trim((string)($parts[1] ?? 'Diagnostic code'));
+                    if(!is_numeric($rawValue)) {
+                        throw new RuntimeException("Diagnostic code '{$rawValue}' for '{$key}' must be numeric. Use one entry per line, for example -9998 = insufficient measurement time.");
+                    }
+                    $codes[]=['value'=>(float)$rawValue,'meaning'=>$meaning!=='' ? $meaning : 'Diagnostic code'];
+                }
+
+                $rawColumn=$column.'_raw';
+                $qcColumn=$column.'_qc';
+                if(!lakestat_column_exists($pdo,$table,$rawColumn)) {
+                    $schemaChanges[]=['field'=>$key,'column'=>$column,'raw'=>$rawColumn,'qc'=>$qcColumn,'type'=>$field['type'] ?? 'number'];
+                } elseif(!lakestat_column_exists($pdo,$table,$qcColumn)) {
+                    $schemaChanges[]=['field'=>$key,'column'=>$column,'raw'=>null,'qc'=>$qcColumn,'type'=>$field['type'] ?? 'number'];
+                }
+
+                $newQc[$key]=[
+                    'enabled'=>true,
+                    'min'=>$min,
+                    'max'=>$max,
+                    'diagnostic_codes'=>$codes
+                ];
+            }
+
+            if($schemaChanges) {
+                lakestat_backup_station($pdo,$station);
+                foreach($schemaChanges as $change) {
+                    if($change['raw']!==null) {
+                        $rawType=sql_type_from_field_type((string)$change['type']);
+                        $pdo->exec("ALTER TABLE `{$table}` ADD COLUMN `{$change['raw']}` {$rawType}");
+                        $pdo->exec("UPDATE `{$table}` SET `{$change['raw']}`=`{$change['column']}` WHERE `{$change['raw']}` IS NULL");
+                    }
+                    if(!lakestat_column_exists($pdo,$table,(string)$change['qc'])) {
+                        $pdo->exec("ALTER TABLE `{$table}` ADD COLUMN `{$change['qc']}` VARCHAR(32) NULL");
+                        $pdo->exec("UPDATE `{$table}` SET `{$change['qc']}`='legacy_unchecked' WHERE `{$change['column']}` IS NOT NULL");
+                    }
+                }
+            }
+
+            foreach($newQc as $key=>$qc) {
+                $station['fields'][$key]['qc']=$qc;
+            }
+
+            lakestat_write_php_config(
+                lakestat_config_path('stations'.DIRECTORY_SEPARATOR.$code.'.php'),
+                $station
+            );
+
+            $message='Variable quality-control settings saved successfully.'
+                .($schemaChanges ? ' A station backup was created before QC columns were added.' : '');
+            $_GET['station']=$code;
+        }
+
         if ($action === 'save_webhook' || $action === 'test_webhook') {
             $code=lakestat_station_code((string)($_POST['station'] ?? ''));
             $station=lakestat_station_config($code);
@@ -957,6 +1055,49 @@ references are not broken.
 
 <p><button class="primary" type="submit">Save Variable Labels &amp; Units</button></p>
 <p id="fieldDraftNotice" class="hint" style="display:none;"></p>
+</form>
+
+<h3>Variable Quality Control <?= slim_help_button('Variable Quality Control','Optional station-level quality control for individual numeric variables. SLIM preserves the received value in a companion raw column, stores NULL in the normal data column when a configured diagnostic code or range check fails, and records the QC result. Public displays and outbound webhooks use the quality-controlled value.') ?></h3>
+<p class="hint">QC is optional for each variable. Diagnostic codes are checked before the acceptable range. Enter diagnostic values one per line as <code>value = meaning</code>, for example <code>-9998 = insufficient measurement time</code>. Blank minimum or maximum values disable that bound.</p>
+
+<form method="post">
+<input type="hidden" name="csrf" value="<?= h($_SESSION['csrf']) ?>">
+<input type="hidden" name="action" value="save_variable_qc">
+<input type="hidden" name="station" value="<?= h($selectedCode) ?>">
+
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Enable QC</th>
+<th>Minimum acceptable</th>
+<th>Maximum acceptable</th>
+<th>Diagnostic/error values</th>
+</tr>
+</thead>
+<tbody>
+<?php foreach($selectedStation['fields'] as $key=>$field):
+    if(!empty($field['derived']) || ($field['type'] ?? 'number')==='text') continue;
+    $qc=is_array($field['qc'] ?? null) ? $field['qc'] : [];
+    $diagLines=[];
+    foreach(($qc['diagnostic_codes'] ?? []) as $diag) {
+        if(!is_array($diag) || !array_key_exists('value',$diag)) continue;
+        $diagLines[]=(string)$diag['value'].' = '.(string)($diag['meaning'] ?? 'Diagnostic code');
+    }
+?>
+<tr>
+<td><strong><?= h((string)($field['label'] ?? $key)) ?></strong><br><code><?= h($key) ?></code></td>
+<td><input type="checkbox" name="qc_enabled[<?= h($key) ?>]" value="1" <?= !empty($qc['enabled'])?'checked':'' ?>></td>
+<td><input type="number" step="any" name="qc_min[<?= h($key) ?>]" value="<?= h(isset($qc['min']) && $qc['min']!==null ? (string)$qc['min'] : '') ?>" placeholder="No minimum"></td>
+<td><input type="number" step="any" name="qc_max[<?= h($key) ?>]" value="<?= h(isset($qc['max']) && $qc['max']!==null ? (string)$qc['max'] : '') ?>" placeholder="No maximum"></td>
+<td><textarea name="qc_diagnostics[<?= h($key) ?>]" rows="3" placeholder="-9998 = insufficient measurement time&#10;-9999 = sensor error"><?= h(implode("\n",$diagLines)) ?></textarea></td>
+</tr>
+<?php endforeach; ?>
+</tbody>
+</table>
+
+<p><button class="primary" type="submit">Save Variable QC Settings</button></p>
+<p class="hint">When QC is first enabled for a variable, SLIM creates <code>_raw</code> and <code>_qc</code> companion columns after first creating a station CSV/configuration backup. Existing observations are copied into the raw column and marked <code>legacy_unchecked</code>; they are not retroactively rejected.</p>
 </form>
 
 <h3>Station Details</h3>

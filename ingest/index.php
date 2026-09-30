@@ -177,8 +177,44 @@ try {
             $value = substr((string)$value, 0, 255);
         }
 
+        $qc=is_array($field['qc'] ?? null) ? $field['qc'] : [];
+        if(!empty($qc['enabled']) && $type!=='text' && empty($field['derived'])) {
+            $rawValue=$value;
+            $qcStatus=$value===null ? 'missing' : 'valid';
+
+            if($value!==null) {
+                foreach(($qc['diagnostic_codes'] ?? []) as $diag) {
+                    if(!is_array($diag) || !array_key_exists('value',$diag)) continue;
+                    if((float)$value === (float)$diag['value']) {
+                        $qcStatus='diagnostic';
+                        $value=null;
+                        break;
+                    }
+                }
+
+                if($qcStatus==='valid') {
+                    $min=array_key_exists('min',$qc) && $qc['min']!==null ? (float)$qc['min'] : null;
+                    $max=array_key_exists('max',$qc) && $qc['max']!==null ? (float)$qc['max'] : null;
+                    if(($min!==null && (float)$value<$min) || ($max!==null && (float)$value>$max)) {
+                        $qcStatus='out_of_range';
+                        $value=null;
+                    }
+                }
+            }
+
+            $rawColumn=lakestat_safe_identifier($column.'_raw');
+            $qcColumn=lakestat_safe_identifier($column.'_qc');
+            $columns[]=$rawColumn;
+            $params[$rawColumn]=$rawValue;
+            $columns[]=$qcColumn;
+            $params[$qcColumn]=$qcStatus;
+        }
+
         $columns[] = $column;
         $params[$column] = $value;
+
+        // Downstream webhook payloads use the quality-controlled value.
+        $data[$jsonKey]=$value;
     }
 
     if (!$columns) {
