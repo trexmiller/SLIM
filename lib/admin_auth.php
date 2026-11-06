@@ -224,8 +224,18 @@ function slim_admin_current_user(): ?string {
     return is_string($user) && $user !== '' ? $user : null;
 }
 
-function slim_admin_fingerprint(): string {
-    return hash('sha256', (string)($_SERVER['HTTP_USER_AGENT'] ?? ''));
+function slim_admin_account_fingerprint(array $record): string {
+    return hash('sha256', (string)($record['hash'] ?? '') . "\0" . (string)($record['password_changed'] ?? ''));
+}
+
+function slim_admin_session_authorized(): bool {
+    $user=slim_admin_current_user();
+    if($user===null) return false;
+    $users=slim_admin_users();
+    if(!isset($users[$user]) || !is_array($users[$user])) return false;
+    $expected=slim_admin_account_fingerprint($users[$user]);
+    $actual=$_SESSION['_slim_admin_auth_fingerprint'] ?? null;
+    return is_string($actual) && hash_equals($expected,$actual);
 }
 
 function slim_admin_attempt_login(string $username, string $password): bool {
@@ -270,8 +280,8 @@ function slim_admin_attempt_login(string $username, string $password): bool {
     session_regenerate_id(true);
 
     $_SESSION['slim_admin_user']        = $matched;
+    $_SESSION['_slim_admin_auth_fingerprint'] = slim_admin_account_fingerprint($users[$matched]);
     $_SESSION['slim_admin_login_time']  = time();
-    $_SESSION['slim_admin_fingerprint'] = slim_admin_fingerprint();
     $_SESSION['_slim_admin_last_activity'] = time();
 
     return true;
@@ -308,13 +318,6 @@ function slim_admin_session_expired(): bool {
         return true;
     }
 
-    if (
-        isset($_SESSION['slim_admin_fingerprint'])
-        && !hash_equals((string)$_SESSION['slim_admin_fingerprint'], slim_admin_fingerprint())
-    ) {
-        return true;
-    }
-
     return false;
 }
 
@@ -331,10 +334,62 @@ function slim_admin_auth_token(): string {
 }
 
 function slim_admin_auth_token_valid(): bool {
-    return hash_equals(
-        (string)($_SESSION['slim_admin_auth_csrf'] ?? ''),
-        (string)($_POST['auth_csrf'] ?? '')
-    );
+    $expected=(string)($_SESSION['slim_admin_auth_csrf'] ?? '');
+    $provided=(string)($_POST['auth_csrf'] ?? '');
+    return $expected !== '' && $provided !== '' && hash_equals($expected,$provided);
+}
+
+// ---------------------------------------------------------------------------
+// First-run installation ownership verification
+// ---------------------------------------------------------------------------
+const SLIM_ADMIN_CLAIM_FILE = 'ADMIN_SETUP_CODE';
+
+function slim_admin_claim_path(): string {
+    return lakestat_config_path(SLIM_ADMIN_CLAIM_FILE);
+}
+function slim_admin_claim_verified(): bool {
+    return !empty($_SESSION['slim_admin_claim_verified']);
+}
+function slim_admin_ensure_claim_code(): void {
+    if(slim_admin_has_accounts() || slim_admin_claim_verified()) return;
+    if(slim_config_inside_webroot()) {
+        throw new RuntimeException('Initial administrator setup is locked until SLIM private configuration is stored outside the published web directory.');
+    }
+    lakestat_ensure_config_dir();
+    $path=slim_admin_claim_path();
+    if(is_file($path)) return;
+    $code=bin2hex(random_bytes(32));
+    $handle=@fopen($path,'x');
+    if($handle===false) {
+        if(is_file($path)) return;
+        throw new RuntimeException('Unable to create the one-time administrator setup code file.');
+    }
+    $ok=fwrite($handle,$code.PHP_EOL);
+    fclose($handle);
+    @chmod($path,0600);
+    if($ok===false) {
+        @unlink($path);
+        throw new RuntimeException('Unable to write the one-time administrator setup code file.');
+    }
+}
+function slim_admin_verify_claim_code(string $provided): bool {
+    $provided=trim($provided);
+    if($provided==='') return false;
+    $path=slim_admin_claim_path();
+    if(!is_file($path)) return false;
+    $expected=trim((string)@file_get_contents($path));
+    if($expected==='' || !hash_equals($expected,$provided)) return false;
+    session_regenerate_id(true);
+    $_SESSION['slim_admin_claim_verified']=true;
+    $_SESSION['slim_admin_claim_verified_at']=time();
+    return true;
+}
+function slim_admin_remove_claim_code(): void {
+    $path=slim_admin_claim_path();
+    if(is_file($path) && !@unlink($path)) {
+        throw new RuntimeException('Administrator account was created, but SLIM could not remove the one-time setup code. Remove ADMIN_SETUP_CODE from the private configuration directory manually.');
+    }
+    unset($_SESSION['slim_admin_claim_verified'],$_SESSION['slim_admin_claim_verified_at']);
 }
 
 // ---------------------------------------------------------------------------
@@ -387,15 +442,17 @@ function slim_admin_gate_escape(string $value): string {
 
 function slim_admin_render_gate(string $mode, string $error = '', string $notice = ''): void {
     if (!headers_sent()) {
-        http_response_code($mode === 'first_run' ? 200 : 401);
+        http_response_code(in_array($mode,['claim','first_run'],true) ? 200 : 401);
         header('Content-Type: text/html; charset=utf-8');
         header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
         header('X-Robots-Tag: noindex, nofollow');
     }
 
     $token     = slim_admin_gate_escape(slim_admin_auth_token());
+    $claim     = $mode === 'claim';
     $firstRun  = $mode === 'first_run';
-    $title     = $firstRun ? 'Create SLIM Administrator' : 'SLIM Administration';
+    $title     = $claim ? 'Verify Installation Ownership'
+               : ($firstRun ? 'Create SLIM Administrator' : 'SLIM Administration');
     $minLength = SLIM_ADMIN_MIN_PASSWORD;
 
     $warnings = [];
@@ -436,16 +493,25 @@ button:hover{background:#000}
 </head>
 <body>
 <div class="wrap"><div class="card">
-<h1><?= $firstRun ? 'Create SLIM Administrator' : 'SLIM Administration' ?></h1>
+<h1><?= $claim ? 'Verify Installation Ownership' : ($firstRun ? 'Create SLIM Administrator' : 'SLIM Administration') ?></h1>
 <?php foreach ($warnings as $warning): ?>
 <div class="warn"><?= slim_admin_gate_escape($warning) ?></div>
 <?php endforeach; ?>
 <?php if ($notice !== ''): ?><div class="notice"><?= slim_admin_gate_escape($notice) ?></div><?php endif; ?>
 <?php if ($error !== ''): ?><div class="error"><?= slim_admin_gate_escape($error) ?></div><?php endif; ?>
-<?php if ($firstRun): ?>
-<p class="hint">No administrator account exists yet. Create one now to secure this
-installation. Until this is done, anyone who reaches this page can claim the
-account, so complete it immediately after installing SLIM.</p>
+<?php if ($claim): ?>
+<p class="hint">This SLIM installation has not yet been claimed. A one-time setup code has been created in the private SLIM configuration directory:</p>
+<p><code><?= slim_admin_gate_escape(lakestat_home() . DIRECTORY_SEPARATOR . SLIM_ADMIN_CLAIM_FILE) ?></code></p>
+<p class="hint">Retrieve that file using your hosting file manager, SSH, or SFTP and enter the code below. The code itself is never displayed through the web interface.</p>
+<form method="post" autocomplete="off">
+<input type="hidden" name="auth_csrf" value="<?= $token ?>">
+<input type="hidden" name="slim_admin_verify_claim" value="1">
+<label for="slim_claim">One-time setup code</label>
+<input id="slim_claim" type="password" name="setup_code" required autofocus autocomplete="off">
+<button type="submit">Verify installation</button>
+</form>
+<?php elseif ($firstRun): ?>
+<p class="hint">Installation ownership has been verified. Create the first SLIM administrator account.</p>
 <form method="post" autocomplete="off">
 <input type="hidden" name="auth_csrf" value="<?= $token ?>">
 <input type="hidden" name="slim_admin_create_first" value="1">

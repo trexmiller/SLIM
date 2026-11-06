@@ -106,11 +106,10 @@ $mappedStations=array_values(array_filter($stationDetails,function($station){
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title><?= h((string)$site['site_title']) ?></title>
 
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 
 <?php if(!empty($site['show_station_map']) && $mappedStations): ?>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<link rel="stylesheet" href="assets/vendor/leaflet/leaflet.css">
+<script src="assets/vendor/leaflet/leaflet.js"></script>
 <?php endif; ?>
 
 <style>
@@ -134,7 +133,7 @@ body{
     min-height:100vh;
     background:var(--bg);
     color:var(--text);
-    font-family:'Space Grotesk',system-ui,sans-serif;
+    font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;
 }
 
 .wrap{
@@ -268,14 +267,14 @@ header{
 .station-code{
     margin-top:3px;
     color:var(--accent);
-    font-family:'IBM Plex Mono',monospace;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;
     font-size:12px;
 }
 
 .station-coords{
     margin-top:10px;
     color:var(--text-sec);
-    font-family:'IBM Plex Mono',monospace;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;
     font-size:12px;
 }
 
@@ -419,7 +418,7 @@ footer,.slim-version-footer{font-size:14px}
 
 <?php if(!empty($site['show_station_map']) && $mappedStations): ?>
 <script>
-const stationData=<?= json_encode($mappedStations,JSON_UNESCAPED_SLASHES) ?>;
+const stationData=<?= json_encode($mappedStations,JSON_UNESCAPED_SLASHES|JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?>;
 
 const map=L.map('stationMap',{
     scrollWheelZoom:false

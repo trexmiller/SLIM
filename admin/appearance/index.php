@@ -153,7 +153,7 @@ try {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SLIM Appearance & Branding</title>
+<title>Appearance & Branding</title>
 <style>
 body{font-family:Arial,sans-serif;background:#f5f6f7;margin:0;color:#222}
 .wrap{max-width:1050px;margin:35px auto;padding:0 20px}
@@ -190,15 +190,15 @@ button{padding:9px 15px;border:0;border-radius:5px;background:#222;color:#fff;cu
 
 <label>Theme</label>
 <select name="theme">
-<option value="lakestat_dark" <?= $config['theme']==='lakestat_dark'?'selected':'' ?>>SLIM Dark</option>
-<option value="lakestat_light" <?= $config['theme']==='lakestat_light'?'selected':'' ?>>SLIM Light</option>
+<option value="lakestat_dark" <?= $config['theme']==='lakestat_dark'?'selected':'' ?>>Dark</option>
+<option value="lakestat_light" <?= $config['theme']==='lakestat_light'?'selected':'' ?>>Light</option>
 <option value="freshwater" <?= $config['theme']==='freshwater'?'selected':'' ?>>Freshwater</option>
 <option value="neutral" <?= $config['theme']==='neutral'?'selected':'' ?>>Neutral</option>
 <option value="custom" <?= $config['theme']==='custom'?'selected':'' ?>>Custom</option>
 </select>
 
 <label>Header branding</label>
-<p class="hint">If you choose Logo + organization name, SLIM uses the Organization set under Station Management → System defaults.</p>
+<p class="hint">If you choose Logo + organization name, The page uses the Organization set under Station Management → System defaults.</p>
 <select name="logo_mode">
 <option value="title_only" <?= $config['logo_mode']==='title_only'?'selected':'' ?>>Dashboard title only</option>
 <option value="logo_only" <?= $config['logo_mode']==='logo_only'?'selected':'' ?>>Logo only</option>

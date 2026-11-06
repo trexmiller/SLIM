@@ -41,7 +41,7 @@ $orgName=trim((string)($appearance['organization_name'] ?? ($site['organization_
 <?php if($site['contact_email']!==''): ?><p><a href="mailto:<?= h($site['contact_email']) ?>"><?= h($site['contact_email']) ?></a></p><?php endif; ?>
 <?php if(($site['contact_phone'] ?? '')!==''): ?><p><?= h((string)$site['contact_phone']) ?></p><?php endif; ?>
 <?php if(($site['contact_address'] ?? '')!==''): ?><p><?= nl2br(h((string)$site['contact_address'])) ?></p><?php endif; ?>
-<?php if(($site['contact_website'] ?? '')!==''): ?><p><a href="<?= h((string)$site['contact_website']) ?>" target="_blank" rel="noopener"><?= h((string)$site['contact_website']) ?></a></p><?php endif; ?>
+<?php if(slim_is_http_url((string)($site['contact_website'] ?? ''))): ?><p><a href="<?= h((string)$site['contact_website']) ?>" target="_blank" rel="noopener"><?= h((string)$site['contact_website']) ?></a></p><?php endif; ?>
 </main>
 <p class="slim-version-footer"><?= h(slim_footer_text()) ?></p>
 </div>

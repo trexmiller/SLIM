@@ -55,6 +55,7 @@ function stream_station_csv(
     string $endUtc,
     $output
 ): void {
+    lakestat_optimize_station_table($pdo,$station);
     $table=lakestat_safe_identifier((string)$station['table']);
     $columns=slim_export_station_columns($pdo,$station);
 
@@ -73,9 +74,9 @@ function stream_station_csv(
 
     $sql="SELECT {$columnSql}
           FROM `{$table}`
-          WHERE COALESCE(`observed_at`,`received_at`) >= :start
-            AND COALESCE(`observed_at`,`received_at`) < :end
-          ORDER BY COALESCE(`observed_at`,`received_at`) ASC";
+          WHERE `observed_at` >= :start
+            AND `observed_at` < :end
+          ORDER BY `observed_at` ASC";
 
     $stmt=$pdo->prepare($sql);
     $stmt->execute([
@@ -86,7 +87,8 @@ function stream_station_csv(
     while($row=$stmt->fetch(PDO::FETCH_ASSOC)) {
         $values=[];
         foreach($columns as $column) {
-            $values[]=$row[$column] ?? null;
+            $value=$row[$column] ?? null;
+            $values[]=slim_csv_safe_value($value, is_string($value) && !is_numeric($value));
         }
         fputcsv($output,$values);
     }
@@ -281,7 +283,7 @@ try {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SLIM Data Export / Backup</title>
+<title>Data Export / Backup</title>
 <style>
 body{font-family:Arial,sans-serif;background:#f5f6f7;margin:0;color:#222}
 .wrap{max-width:1100px;margin:35px auto;padding:0 20px}

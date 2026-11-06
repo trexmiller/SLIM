@@ -55,7 +55,7 @@ try {
 ?>
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SLIM Database Settings</title>
+<title>Database Settings</title>
 <style>
 body{font-family:Arial,sans-serif;background:#f5f6f7;margin:0;color:#222}.wrap{max-width:900px;margin:35px auto;padding:0 20px}
 .card{background:#fff;border:1px solid #ddd;border-radius:8px;padding:24px;margin-bottom:20px}
@@ -68,7 +68,7 @@ button{padding:10px 18px;border:0;border-radius:5px;background:#222;color:#fff;c
 <p><?= slim_admin_session_bar() ?>
 <a href="../">&larr; Admin Home</a></p>
 <div class="card"><h1>Database Settings</h1>
-<p class="hint">Submitted credentials are tested before SLIM saves them.</p>
+<p class="hint">Submitted credentials are tested before saving them.</p>
 <?php if($error): ?><div class="error"><?= h($error) ?></div><?php endif; ?>
 <?php if($message): ?><div class="ok"><?= h($message) ?></div><?php endif; ?>
 <form method="post">

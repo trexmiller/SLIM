@@ -22,12 +22,12 @@ try {
     // Throughput limiter: caps total requests/minute from one IP across all
     // stations. Runs before authentication so it also bounds the cost of
     // repeated failed attempts, not just successful ingestion.
-    $ingestLimits = slim_ingest_limits();
-    slim_rate_limit('ingest', $ingestLimits['rate_limit_per_minute'], $ingestLimits['rate_limit_enabled']);
+    // No IP-wide ingest throttle: carrier NAT can put unrelated stations
+    // behind the same public IP. Valid station traffic must not be blocked
+    // by another device's authentication failures or traffic volume.
 
     if (($system['require_https'] ?? true)) {
-        $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
-              || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
+        $https = slim_request_is_https();
 
         if (!$https) {
             reply_json(400, ['ok'=>false,'error'=>'HTTPS is required.']);
@@ -57,41 +57,21 @@ try {
         reply_json(400, ['ok'=>false,'error'=>'station is required.']);
     }
 
-    // Failed-authentication lockout, keyed by IP. This is separate from the
-    // throughput limiter above: it specifically targets sustained API-key
-    // guessing, which a generous throughput limit alone would not catch.
-    $authLockRemaining = slim_ingest_auth_locked();
-
-    if ($authLockRemaining > 0) {
-        if (!headers_sent()) {
-            header('Retry-After: ' . (string)$authLockRemaining);
-        }
-        reply_json(429, ['ok'=>false,'error'=>'Too many failed authentication attempts. Try again later.']);
+    // Credentials are accepted only from the header. Never accept secrets in
+    // query strings or request bodies, where they may be logged.
+    if (array_key_exists('api_key', $_GET) || array_key_exists('api_key', $data)) {
+        reply_json(400, ['ok'=>false,'error'=>'API keys must be sent in the X-API-Key header only.']);
     }
-
-    // Unknown station and wrong API key deliberately produce the identical
-    // status code, JSON body, and (via the dummy-key comparison below)
-    // similar response timing. Distinguishing between them would let a
-    // caller enumerate valid station codes without ever supplying a key.
     try {
         $station = lakestat_station_config($stationCode);
     } catch (Throwable $unknownStationError) {
         $station = null;
     }
-
-    $apiKey = $_SERVER['HTTP_X_API_KEY'] ?? ($data['api_key'] ?? '');
-    $expectedKey = $station !== null ? (string)($station['api_key'] ?? '') : '';
-
-    if ($expectedKey === '') {
-        $expectedKey = SLIM_INGEST_DUMMY_KEY;
-    }
-
-    if ($station === null || !is_string($apiKey) || !hash_equals($expectedKey, $apiKey)) {
-        slim_ingest_record_auth_failure();
+    $apiKey = $_SERVER['HTTP_X_API_KEY'] ?? '';
+    $authenticated = slim_api_key_matches($station ?? [], is_string($apiKey) ? $apiKey : '');
+    if ($station === null || !$authenticated) {
         reply_json(401, ['ok'=>false,'error'=>'Invalid API key.']);
     }
-
-    slim_ingest_clear_auth_failures();
 
     $table = lakestat_safe_identifier((string)$station['table']);
     $columns = [];
@@ -110,47 +90,58 @@ try {
 
     $observedAt=null;
 
-    if($timestamp!==null && $timestamp!=='') {
+    // Missing timestamps retain the documented receipt-time fallback. Present
+    // but invalid timestamps are rejected before any observation is inserted.
+    if ($timestamp !== null && $timestamp !== '') {
         try {
-            if(is_numeric($timestamp)) {
-                $numericTimestamp=(float)$timestamp;
-
-                // Unix epoch milliseconds are normally 13 digits. Treat any
-                // value >= 100 billion as milliseconds; epoch seconds remain
-                // well below that threshold for centuries.
-                if(abs($numericTimestamp)>=100000000000) {
-                    $numericTimestamp/=1000.0;
-                }
-
-                $seconds=(int)floor($numericTimestamp);
-                $dt=(new DateTimeImmutable('@'.$seconds))
-                    ->setTimezone(new DateTimeZone('UTC'));
-            } else {
-                // Timestamp strings without an explicit zone are interpreted
-                // using the station's configured time zone when available,
-                // otherwise the SLIM system time zone.
-                $timestampTimezone=(string)(
-                    $station['timezone']
-                    ?? (slim_system_config()['timezone'] ?? 'UTC')
-                );
-                $timestampTimezone=slim_valid_timezone($timestampTimezone);
-
-                $dt=new DateTimeImmutable(
-                    (string)$timestamp,
-                    new DateTimeZone($timestampTimezone)
-                );
-                $dt=$dt->setTimezone(new DateTimeZone('UTC'));
+            if (!is_string($timestamp) && !is_int($timestamp) && !is_float($timestamp)) {
+                throw new InvalidArgumentException('Timestamp must be a string or number.');
             }
-
+            $rawTimestamp=trim((string)$timestamp);
+            if ($rawTimestamp === '') {
+                throw new InvalidArgumentException('Timestamp is empty.');
+            }
+            if (is_numeric($rawTimestamp)) {
+                // Only 10-digit epoch seconds or 13-digit epoch milliseconds.
+                // Shorter numeric strings (including YYYYMMDD) are ambiguous.
+                if (!preg_match('/^-?(?:[0-9]{10}|[0-9]{13})$/D', $rawTimestamp)) {
+                    throw new InvalidArgumentException('Epoch timestamp must use 10-digit seconds or 13-digit milliseconds.');
+                }
+                $milliseconds=(strlen(ltrim($rawTimestamp,'-'))===13);
+                $seconds=$milliseconds ? (int)floor(((float)$rawTimestamp)/1000.0) : (int)$rawTimestamp;
+                $dt=new DateTimeImmutable('@'.$seconds);
+            } else {
+                $timestampTimezone=(string)($station['timezone'] ?? (slim_system_config()['timezone'] ?? 'UTC'));
+                $timestampTimezone=slim_valid_timezone($timestampTimezone);
+                $dt=new DateTimeImmutable($rawTimestamp,new DateTimeZone($timestampTimezone));
+                // PHP sometimes accepts malformed dates with rollover warnings.
+                $parseErrors=DateTimeImmutable::getLastErrors();
+                if (is_array($parseErrors) && ($parseErrors['warning_count']>0 || $parseErrors['error_count']>0)) {
+                    throw new InvalidArgumentException('Invalid date or time.');
+                }
+            }
+            $dt=$dt->setTimezone(new DateTimeZone('UTC'));
+            // Bounds apply only to live ingestion. Historical CSV import is separate.
+            // Allow 2000-01-01 onward and up to 24 hours ahead of server receipt.
+            $earliest=new DateTimeImmutable('2000-01-01T00:00:00Z');
+            $latest=$slimArrivalUtc->modify('+24 hours');
+            if ($dt<$earliest || $dt>$latest) {
+                throw new InvalidArgumentException('Timestamp outside allowed range (2000-01-01 UTC to 24 hours in the future).');
+            }
             $observedAt=$dt->format('Y-m-d H:i:s');
-        } catch(Throwable $timestampError) {
-            // A malformed station timestamp should not prevent otherwise valid
-            // environmental data from being ingested. observed_at remains NULL.
-            $observedAt=null;
+        } catch (Throwable $timestampError) {
+            reply_json(422,['ok'=>false,'error'=>'Invalid station timestamp: '.$timestampError->getMessage()]);
         }
     }
 
     foreach ($station['fields'] as $field) {
+        // Derived fields are server-calculated; never accept client-supplied values.
+        if (!empty($field['derived'])) {
+            if (isset($field['json_key'])) {
+                unset($data[(string)$field['json_key']]);
+            }
+            continue;
+        }
         $jsonKey = $field['json_key'];
 
         if (!array_key_exists($jsonKey, $data)) {
@@ -161,53 +152,19 @@ try {
         $type = $field['type'] ?? 'number';
         $value = $data[$jsonKey];
 
-        if ($value === '' || $value === null) {
-            $value = null;
-        } elseif ($type === 'number') {
-            if (!is_numeric($value)) {
-                reply_json(422, ['ok'=>false,'error'=>"Field {$jsonKey} must be numeric."]);
-            }
-            $value = (float)$value;
-        } elseif ($type === 'integer') {
-            if (filter_var($value, FILTER_VALIDATE_INT) === false) {
-                reply_json(422, ['ok'=>false,'error'=>"Field {$jsonKey} must be an integer."]);
-            }
-            $value = (int)$value;
-        } else {
-            $value = substr((string)$value, 0, 255);
+        try {
+            $normalized=slim_observation_normalize_field($field,$value);
+        } catch(InvalidArgumentException $e) {
+            reply_json(422,['ok'=>false,'error'=>"Field {$jsonKey}: ".$e->getMessage()]);
         }
-
-        $qc=is_array($field['qc'] ?? null) ? $field['qc'] : [];
-        if(!empty($qc['enabled']) && $type!=='text' && empty($field['derived'])) {
-            $rawValue=$value;
-            $qcStatus=$value===null ? 'missing' : 'valid';
-
-            if($value!==null) {
-                foreach(($qc['diagnostic_codes'] ?? []) as $diag) {
-                    if(!is_array($diag) || !array_key_exists('value',$diag)) continue;
-                    if((float)$value === (float)$diag['value']) {
-                        $qcStatus='diagnostic';
-                        $value=null;
-                        break;
-                    }
-                }
-
-                if($qcStatus==='valid') {
-                    $min=array_key_exists('min',$qc) && $qc['min']!==null ? (float)$qc['min'] : null;
-                    $max=array_key_exists('max',$qc) && $qc['max']!==null ? (float)$qc['max'] : null;
-                    if(($min!==null && (float)$value<$min) || ($max!==null && (float)$value>$max)) {
-                        $qcStatus='out_of_range';
-                        $value=null;
-                    }
-                }
-            }
-
+        $value=$normalized['value'];
+        if(array_key_exists('qc',$normalized)) {
             $rawColumn=lakestat_safe_identifier($column.'_raw');
             $qcColumn=lakestat_safe_identifier($column.'_qc');
             $columns[]=$rawColumn;
-            $params[$rawColumn]=$rawValue;
+            $params[$rawColumn]=$normalized['raw'];
             $columns[]=$qcColumn;
-            $params[$qcColumn]=$qcStatus;
+            $params[$qcColumn]=$normalized['qc'];
         }
 
         $columns[] = $column;
@@ -221,9 +178,20 @@ try {
         reply_json(422, ['ok'=>false,'error'=>'No configured measurement fields were supplied.']);
     }
 
+    // Resolve SLIM's canonical UTC timestamps before derived calculations so
+    // timestamp-derived variables can use the same observed/received times that
+    // will be stored for this observation.
+    $receivedAtUtc=$slimArrivalUtc->format('Y-m-d H:i:s');
+    if($observedAt===null || $observedAt==='') {
+        $observedAt=$receivedAtUtc;
+    }
+
     // Calculate station-level derived variables from normalized incoming values.
     // Derived results become normal stored fields and may also be forwarded by webhook.
-    $params=lakestat_apply_derived_variables($station,$params);
+    $params=lakestat_apply_derived_variables($station,$params,[
+        'observed_at'=>$observedAt,
+        'received_at'=>$receivedAtUtc
+    ]);
     $columns=array_keys($params);
 
     // Add derived values to the normalized payload used by outbound webhooks.
@@ -241,8 +209,6 @@ try {
     // received_at is SLIM's single canonical data-arrival timestamp.
     // It is captured by the application and stored explicitly as UTC, avoiding
     // dependence on the hosting provider/MySQL session time zone.
-    $receivedAtUtc=$slimArrivalUtc->format('Y-m-d H:i:s');
-
     $sqlColumns = ['observed_at','received_at'];
     $sqlValues = [':observed_at',':received_at'];
     $bind = [
@@ -263,25 +229,33 @@ try {
          . implode(', ', $sqlValues)
          . ")";
 
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute($bind);
-
-    // Queue outbound webhook only after the observation has been stored.
-    // Webhook delivery is handled separately so a remote endpoint cannot
-    // make ingestion fail or wait for a network timeout.
+    // Observation persistence must never depend on webhook configuration or queue health.
+    $pdo->beginTransaction();
     try {
-        $webhookPayload=lakestat_webhook_payload($station,$data,$observedAt);
-        lakestat_webhook_enqueue($pdo,$station,$webhookPayload);
-    } catch(Throwable $webhookError) {
-        error_log('LakeStat webhook queue error: '.$webhookError->getMessage());
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($bind);
+        $observationRecordId=$pdo->lastInsertId();
+        $pdo->commit();
+    } catch(Throwable $storageError) {
+        if($pdo->inTransaction()) $pdo->rollBack();
+        throw $storageError;
     }
 
-    reply_json(201, [
-        'ok'=>true,
-        'station'=>$station['code'],
-        'record_id'=>$pdo->lastInsertId(),
-        'received_fields'=>$columns
-    ]);
+    // Best effort only: malformed templates and queue errors cannot reject a
+    // successfully committed observation. No webhook DDL is performed here.
+    try {
+        $webhookConfig=lakestat_webhook_config($station);
+        if(!empty($webhookConfig['enabled']) && trim((string)($webhookConfig['url'] ?? ''))!=='') {
+            $webhookPayload=lakestat_webhook_payload($station,$data,$observedAt);
+            lakestat_webhook_enqueue($pdo,$station,$webhookPayload);
+        }
+    } catch(Throwable $webhookError) {
+        error_log('SLIM webhook queue failure for station '.(string)$station['code']
+            .' (observation '.(string)$observationRecordId.'): '.$webhookError->getMessage());
+    }
+
+    reply_json(201,['ok'=>true,'station'=>$station['code'],
+        'record_id'=>$observationRecordId,'received_fields'=>$columns]);
 
 } catch (Throwable $e) {
     error_log('LakeStat ingest error: ' . $e->getMessage());

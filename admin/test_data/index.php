@@ -20,7 +20,10 @@ function post_json(string $url, string $apiKey, array $payload): array {
     $headers=['Content-Type: application/json','X-API-Key: '.$apiKey];
 
     if(function_exists('curl_init')) {
+        try { slim_outbound_https_target($url); }
+        catch (Throwable $e) { return ['ok'=>false,'status'=>0,'body'=>'Unsafe or unreachable HTTPS destination.']; }
         $ch=curl_init($url);
+        slim_curl_secure_destination($ch, $url);
 
         curl_setopt_array($ch,[
             CURLOPT_POST=>true,
@@ -38,9 +41,9 @@ function post_json(string $url, string $apiKey, array $payload): array {
         $err=curl_error($ch);
         curl_close($ch);
 
-        if($body===false)return ['ok'=>false,'status'=>$status,'body'=>$err];
+        if($body===false)return ['ok'=>false,'status'=>$status,'body'=>'Connection failed.'];
 
-        return ['ok'=>$status>=200&&$status<300,'status'=>$status,'body'=>$body];
+        return ['ok'=>$status>=200&&$status<300,'status'=>$status,'body'=>($status>=200&&$status<300 ? '' : 'Destination returned HTTP '.$status)];
     }
 
     return ['ok'=>false,'status'=>0,'body'=>'cURL is required for this test utility.'];
@@ -171,7 +174,7 @@ if($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['generate'])) {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SLIM Test Data</title>
+<title>Test Data</title>
 <style>
 body{font-family:Arial,sans-serif;background:#f5f6f7;margin:0;color:#222}
 .wrap{max-width:1000px;margin:35px auto;padding:0 20px}

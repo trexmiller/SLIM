@@ -17,7 +17,7 @@ function h(string $v): string {
  * Numeric values are Unix epoch seconds (or milliseconds) and therefore
  * never receive a local-time offset.
  */
-function import_parse_timestamp_utc(string $value): ?string {
+function import_parse_timestamp_utc(string $value, string $stationTimezone = 'UTC'): ?string {
     $value=trim($value);
     if($value==='') return null;
 
@@ -46,7 +46,7 @@ function import_parse_timestamp_utc(string $value): ?string {
 
         // Non-numeric CSV timestamps are interpreted using the configured
         // SLIM system timezone, then normalized to UTC.
-        $tz=(string)(slim_system_config()['timezone'] ?? 'UTC');
+        $tz=$stationTimezone;
         $tz=slim_valid_timezone($tz);
         $dt=new DateTimeImmutable($value,new DateTimeZone($tz));
 
@@ -139,8 +139,15 @@ function import_existing_station(
     }
 
     $insertColumns=['observed_at','received_at'];
-    foreach(array_values($fieldColumns) as $column) {
+    foreach(($station['fields'] ?? []) as $fieldKey=>$meta) {
+        $column=$fieldColumns[$fieldKey];
         if(!in_array($column,$insertColumns,true)) $insertColumns[]=$column;
+        $qc=is_array($meta['qc'] ?? null) ? $meta['qc'] : [];
+        if(!empty($qc['enabled']) && ($meta['type'] ?? 'number')!=='text' && empty($meta['derived'])) {
+            foreach([$column.'_raw',$column.'_qc'] as $extra) {
+                if(!in_array($extra,$insertColumns,true)) $insertColumns[]=$extra;
+            }
+        }
     }
 
     $batchSize=500;
@@ -169,9 +176,9 @@ function import_existing_station(
                     $bind[$key]=$ts;
                 }
                 if($ph) {
-                    $sql="SELECT COALESCE(`observed_at`,`received_at`) AS ts
+                    $sql="SELECT `observed_at` AS ts
                           FROM `{$table}`
-                          WHERE COALESCE(`observed_at`,`received_at`) IN (".
+                          WHERE `observed_at` IN (".
                           implode(',',$ph).")";
                     $stmt=$pdo->prepare($sql);
                     $stmt->execute($bind);
@@ -233,7 +240,8 @@ function import_existing_station(
     try {
         foreach(slim_import_stream_rows($csvPath,$header) as $row) {
             $timestamp=import_parse_timestamp_utc(
-                (string)$row[$headerIndex[$timestampColumn]]
+                (string)$row[$headerIndex[$timestampColumn]],
+                slim_valid_timezone((string)($station['timezone'] ?? (slim_system_config()['timezone'] ?? 'UTC')))
             );
             if($timestamp===null) {
                 $skipped++;
@@ -252,21 +260,22 @@ function import_existing_station(
                 $column=$fieldColumns[$stationField];
                 $raw=$row[$headerIndex[$csvColumn]] ?? null;
 
-                if($raw===null || trim((string)$raw)==='') {
-                    $value=null;
-                } elseif(($meta['type'] ?? 'number')==='number') {
-                    $value=is_numeric($raw) ? (float)$raw : null;
-                } elseif(($meta['type'] ?? 'number')==='integer') {
-                    $value=filter_var($raw,FILTER_VALIDATE_INT)!==false
-                        ? (int)$raw : null;
-                } else {
-                    $value=(string)$raw;
+                // Preserve QC diagnostics and raw values just like live ingestion.
+                if(!empty($meta['derived'])) continue;
+                try {
+                    $normalized=slim_observation_normalize_field($meta, $raw===null || trim((string)$raw)==='' ? null : $raw);
+                } catch(InvalidArgumentException $invalidValue) {
+                    // Match live ingest's rejection of malformed numeric fields.
+                    throw new RuntimeException('CSV field '.(string)$csvColumn.': '.$invalidValue->getMessage(),0,$invalidValue);
                 }
-
-                $rowValues[$column]=$value;
+                $rowValues[$column]=$normalized['value'];
+                if(array_key_exists('qc',$normalized)) {
+                    $rowValues[$column.'_raw']=$normalized['raw'];
+                    $rowValues[$column.'_qc']=$normalized['qc'];
+                }
             }
 
-            $rowValues=lakestat_apply_derived_variables($station,$rowValues);
+            $rowValues=lakestat_apply_derived_variables($station,$rowValues,['observed_at'=>$timestamp,'received_at'=>$receivedAt]);
 
             // Start with all configured columns as NULL so every row in a
             // batch has the same shape.
@@ -274,7 +283,8 @@ function import_existing_station(
                 'observed_at'=>$timestamp,
                 'received_at'=>$receivedAt
             ];
-            foreach(array_values($fieldColumns) as $column) {
+            foreach($insertColumns as $column) {
+                if($column==='observed_at' || $column==='received_at') continue;
                 $prepared[$column]=$rowValues[$column] ?? null;
             }
 
@@ -352,11 +362,11 @@ function import_create_station(
 
     $sql="CREATE TABLE `{$table}` (
         `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-        `observed_at` DATETIME NULL,
+        `observed_at` DATETIME NOT NULL,
         `received_at` DATETIME NOT NULL,
         ".implode(",\n        ",$columnDefs).",
-        INDEX (`observed_at`),
-        INDEX (`received_at`)
+        INDEX `idx_observed_at` (`observed_at`),
+        INDEX `idx_received_at` (`received_at`)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
 
     $pdo->exec($sql);
@@ -369,7 +379,7 @@ function import_create_station(
         'table'=>$table,
         'latitude'=>$lat,
         'longitude'=>$lon,
-        'api_key'=>$apiKey,
+        'api_key_hash'=>slim_api_key_digest($apiKey),
         // Original source column selected as the observation timestamp during CSV import.
         // SLIM stores normalized observation time internally in `observed_at`.
         'timestamp_field'=>$timestampColumn,
@@ -522,7 +532,7 @@ $preview = $preview ?: ($_SESSION['import_preview'] ?? null);
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SLIM CSV Import</title>
+<title>CSV Import</title>
 <style>
 body{font-family:Arial,sans-serif;background:#f5f6f7;margin:0;color:#222}
 .wrap{max-width:1200px;margin:35px auto;padding:0 20px}
@@ -568,11 +578,11 @@ mapping columns and validating the import.
 <option value="new">Create a new station from CSV</option>
 </select>
 
-<label>CSV file <?= slim_help_button('CSV file','Upload a CSV with a header row. SLIM previews the file first and streams rows during import.') ?></label>
+<label>CSV file <?= slim_help_button('CSV file','Upload a CSV with a header row. The importer previews the file first and streams rows during import.') ?></label>
 <input type="file" name="csv_file" accept=".csv,text/csv" required>
 
 <p class="hint">
-SLIM limits:
+Import limits:
 <?= number_format($limits['max_file_bytes']/1048576,1) ?> MB,
 <?= number_format($limits['max_rows']) ?> rows,
 <?= (int)$limits['max_columns'] ?> columns.<br>

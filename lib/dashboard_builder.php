@@ -513,6 +513,13 @@ try {
                     throw new RuntimeException('This station does not have latitude/longitude coordinates.');
                 }
 
+                $locationMode=(string)($_POST['map_location_mode'] ?? 'static');
+                $display['location_mode']=$locationMode==='live' ? 'live' : 'static';
+                if($display['location_mode']==='live') {
+                    $display['latitude_field']=require_field($station,(string)($_POST['map_latitude_field'] ?? ''),'Latitude variable');
+                    $display['longitude_field']=require_field($station,(string)($_POST['map_longitude_field'] ?? ''),'Longitude variable');
+                    $display['fallback_static']=isset($_POST['map_fallback_static']);
+                }
                 $display['zoom']=max(1,min(19,(int)($_POST['map_zoom'] ?? 11)));
                 $display['height']=max(220,min(700,(int)($_POST['map_height'] ?? 360)));
 
@@ -1172,9 +1179,33 @@ five-bin scaling from the displayed data.
 
 <div id="panel-map" class="display-panel">
 <h3>Station map</h3>
-<p class="hint">
-Uses the latitude and longitude already saved for this station.
-</p>
+<p class="hint">Choose the saved station location or the most recent latitude/longitude reported in station data.</p>
+
+<label>Location source <?= slim_help_button('Location source','Static uses the coordinates saved for the station. Live GPS uses latitude and longitude variables from the newest observation.') ?></label>
+<select name="map_location_mode" id="map_location_mode">
+<option value="static" <?= (($editDisplay['location_mode'] ?? 'static')==='static')?'selected':'' ?>>Static station coordinates</option>
+<option value="live" <?= (($editDisplay['location_mode'] ?? 'static')==='live')?'selected':'' ?>>Live GPS coordinates from station data</option>
+</select>
+
+<div class="inline" style="margin-top:12px">
+<div>
+<label>Latitude variable <?= slim_help_button('Latitude variable','Station variable containing latitude in decimal degrees.') ?></label>
+<select name="map_latitude_field">
+<option value="">Choose...</option>
+<?php foreach($fieldOptions as $key=>$label): ?><option value="<?= h($key) ?>" <?= (($editDisplay['latitude_field'] ?? '')===$key)?'selected':'' ?>><?= h($label) ?> — <?= h($key) ?></option><?php endforeach; ?>
+</select>
+</div>
+<div>
+<label>Longitude variable <?= slim_help_button('Longitude variable','Station variable containing longitude in decimal degrees.') ?></label>
+<select name="map_longitude_field">
+<option value="">Choose...</option>
+<?php foreach($fieldOptions as $key=>$label): ?><option value="<?= h($key) ?>" <?= (($editDisplay['longitude_field'] ?? '')===$key)?'selected':'' ?>><?= h($label) ?> — <?= h($key) ?></option><?php endforeach; ?>
+</select>
+</div>
+</div>
+<p><label><input type="checkbox" name="map_fallback_static" value="1" <?= !array_key_exists('fallback_static',$editDisplay ?? []) || !empty($editDisplay['fallback_static'])?'checked':'' ?>>
+Fall back to static station coordinates when live latitude or longitude is zero or unavailable</label></p>
+<p class="hint">SLIM uses the newest observation only; it does not search backward for an older valid GPS fix.</p>
 
 <div class="inline">
 <div>
@@ -1236,7 +1267,7 @@ file_uploads = <?= h((string)ini_get('file_uploads')) ?>.
 </style>
 <script>
 
-const editDisplay = <?= json_encode($editDisplay, JSON_UNESCAPED_SLASHES) ?>;
+const editDisplay = <?= json_encode($editDisplay, JSON_UNESCAPED_SLASHES|JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?>;
 
 function hydrateEditDisplay(){
     if(!editDisplay)return;
@@ -1444,15 +1475,35 @@ function initCustomTextEditor(){
     sync();
 }
 
-document.addEventListener('DOMContentLoaded',function(){ hydrateEditDisplay(); initCustomTextEditor(); });
+document.addEventListener('DOMContentLoaded',function(){
+    if(editDisplay){
+        hydrateEditDisplay();
+    } else {
+        showPanel();
+    }
+    initCustomTextEditor();
+});
 
 
 function showPanel(){
-    var type=document.getElementById('displayType').value;
-    document.querySelectorAll('.display-panel').forEach(function(p){p.classList.remove('active');});
+    var displayType=document.getElementById('displayType');
+    var type=displayType ? displayType.value : '';
+
+    document.querySelectorAll('.display-panel').forEach(function(panel){
+        panel.classList.remove('active');
+        panel.querySelectorAll('input,select,textarea,button').forEach(function(control){
+            control.disabled=true;
+        });
+    });
+
     if(type){
         var panel=document.getElementById('panel-'+type);
-        if(panel)panel.classList.add('active');
+        if(panel){
+            panel.classList.add('active');
+            panel.querySelectorAll('input,select,textarea,button').forEach(function(control){
+                control.disabled=false;
+            });
+        }
     }
 }
 

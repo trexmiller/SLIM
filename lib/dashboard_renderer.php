@@ -94,21 +94,83 @@ $maxPlotDays = $slimHealthDashboard
     ? max(1,min(3650,(int)($system['max_plot_days'] ?? 3650)))
     : max(1,min(3650,(int)($publicLimits['max_dashboard_days'] ?? 30)));
 
-try {
-    $displayTimezone=new DateTimeZone((string)$system['timezone']);
-} catch(Throwable $e) {
-    $displayTimezone=new DateTimeZone('UTC');
-    $system['timezone']='UTC';
-}
-
+// The headquarters timezone is a fallback for legacy stations without a timezone.
+$systemTimezone=(string)($system['timezone'] ?? 'UTC');
+try { $displayTimezone=new DateTimeZone($systemTimezone); }
+catch(Throwable $e) { $systemTimezone='UTC'; $displayTimezone=new DateTimeZone('UTC'); }
+$stationTimezone=$systemTimezone;
 $themeColors=lakestat_theme_colors($appearance);
-
 $dateRangeError='';
 $customDateRange=false;
 $rangeStartLocal='';
 $rangeEndLocal='';
 $rangeStartUtc=null;
 $rangeEndUtc=null;
+
+$error='';
+$stations=[];
+$stationCode='';
+$station=null;
+$displayConfig=['displays'=>[]];
+
+$lineData=[];
+$gaugeData=[];
+$profileData=[];
+$mapData=[];
+$polarData=[];
+$directionalRecentData=[];
+
+$latestTime=null;
+$latestDisplayTime=null;
+$stationOnline=false;
+$onlineThresholdHours=3;
+
+try {
+    $stations = lakestat_list_stations();
+    $adminPreview = $slimHealthDashboard
+        || (function_exists('slim_optional_admin_authenticated') && slim_optional_admin_authenticated());
+
+    if (isset($_GET['station'])) {
+        $requestedCode = lakestat_station_code((string)$_GET['station']);
+        $requestedStation = lakestat_station_config($requestedCode);
+
+        if(!$slimHealthDashboard && empty($requestedStation['published']) && !$adminPreview) {
+            http_response_code(404);
+            $error='Dashboard not available.';
+        } else {
+            $stationCode=$requestedCode;
+            $station=$requestedStation;
+        }
+    } elseif ($stations) {
+        // A bare public /dashboard/ URL always resolves to the first published
+        // station. Being signed in does not make an unpublished station the
+        // accidental default; administrators can preview one by requesting it.
+        foreach($stations as $candidateCode=>$candidateSummary) {
+            $candidate=lakestat_station_config((string)$candidateCode);
+            if($slimHealthDashboard || !empty($candidate['published'])) {
+                $stationCode=(string)$candidateCode;
+                $station=$candidate;
+                break;
+            }
+        }
+        if($stationCode==='' && !$slimHealthDashboard) {
+            http_response_code(404);
+            $error='Dashboard not available.';
+        }
+    }
+
+    if ($stationCode !== '' && $station !== null) {
+        $candidateTimezone=(string)($station['timezone'] ?? '');
+        if($candidateTimezone!=='') {
+            try {
+                $stationTimezone=slim_valid_timezone($candidateTimezone);
+                $displayTimezone=new DateTimeZone($stationTimezone);
+            } catch(Throwable $e) {
+                // Invalid legacy configuration falls back to headquarters timezone.
+                $stationTimezone=$systemTimezone;
+            }
+        }
+        // Convert local calendar boundaries only after selecting the station timezone.
 
 if(isset($_GET['date_from']) || isset($_GET['date_to'])) {
     $rangeStartLocal=trim((string)($_GET['date_from'] ?? ''));
@@ -145,55 +207,20 @@ if(isset($_GET['date_from']) || isset($_GET['date_to'])) {
     }
 }
 
-$error='';
-$stations=[];
-$stationCode='';
-$station=null;
-$displayConfig=['displays'=>[]];
-
-$lineData=[];
-$gaugeData=[];
-$profileData=[];
-$polarData=[];
-$directionalRecentData=[];
-
-$latestTime=null;
-$latestDisplayTime=null;
-$stationOnline=false;
-$onlineThresholdHours=3;
-
-try {
-    $stations = lakestat_list_stations();
-
-    if (isset($_GET['station'])) {
-        $stationCode = lakestat_station_code((string)$_GET['station']);
-    } elseif ($stations) {
-        $keys = array_keys($stations);
-        $stationCode = $keys[0];
-    }
-
-    if ($stationCode !== '') {
-        $station = lakestat_station_config($stationCode);
         $displayConfig = $slimHealthDashboard ? lakestat_health_display_config($stationCode) : lakestat_display_config($stationCode);
 
         $pdo = lakestat_db();
         $table = lakestat_safe_identifier((string)$station['table']);
+        // Public and health dashboard requests must be read-only.
+        // Legacy station backfills/index creation belong in administrative maintenance.
 
         // The date-range selector is based on observation time, not the time
         // the row happened to arrive in SLIM. This is especially important
         // for historical CSV imports, where received_at may be months later.
         if(!isset($_GET['date_from']) && !isset($_GET['date_to'])) {
             $defaultObserved=$pdo->query(
-                "SELECT MAX(`observed_at`) FROM `{$table}` WHERE `observed_at` IS NOT NULL"
+                "SELECT MAX(`observed_at`) FROM `{$table}`"
             )->fetchColumn();
-
-            // received_at is only a fallback for stations that have no
-            // observation timestamps at all.
-            if($defaultObserved===false || $defaultObserved===null || $defaultObserved==='') {
-                $defaultObserved=$pdo->query(
-                    "SELECT MAX(`received_at`) FROM `{$table}` WHERE `received_at` IS NOT NULL"
-                )->fetchColumn();
-            }
 
             if($defaultObserved!==false && $defaultObserved!==null && $defaultObserved!=='') {
                 $defaultUtc=DateTimeImmutable::createFromFormat(
@@ -245,9 +272,75 @@ try {
             }
         }
 
+        // Gauges and profiles all operate on recent observations. Fetch the largest
+        // requested window once and share it across those displays instead of issuing
+        // one ORDER BY/LIMIT query for every gauge/profile field.
+        $recentFields=[];
+        $recentMaxN=0;
+        foreach(($displayConfig['displays'] ?? []) as $recentDisplay) {
+            $recentType=(string)($recentDisplay['type'] ?? '');
+            if($recentType==='gauge') {
+                $field=(string)($recentDisplay['field'] ?? '');
+                if($field!=='' && isset($station['fields'][$field])) {
+                    $recentFields[$field]=lakestat_safe_identifier($field);
+                    $recentMaxN=max($recentMaxN,max(1,(int)($recentDisplay['recent_n'] ?? 3)));
+                }
+            } elseif($recentType==='profile') {
+                $recentMaxN=max($recentMaxN,max(1,(int)($recentDisplay['recent_n'] ?? 1)));
+                foreach(($recentDisplay['points'] ?? []) as $point) {
+                    $field=(string)($point['field'] ?? '');
+                    if($field!=='' && isset($station['fields'][$field])) {
+                        $recentFields[$field]=lakestat_safe_identifier($field);
+                    }
+                }
+            }
+        }
+        $recentRows=[];
+        if($recentMaxN>0 && $recentFields) {
+            $recentSelect=array_map(static fn($f)=>"`{$f}`",array_values($recentFields));
+            $recentSql="SELECT ".implode(', ',$recentSelect)."
+                        FROM `{$table}`
+                        ORDER BY `observed_at` DESC
+                        LIMIT {$recentMaxN}";
+            $recentRows=$pdo->query($recentSql)->fetchAll(PDO::FETCH_ASSOC);
+        }
+
         foreach ($displayConfig['displays'] as $display) {
             $id = $display['id'] ?? '';
             $type = $display['type'] ?? '';
+
+            if ($type === 'map') {
+                $mapInfo=[
+                    'latitude'=>$station['latitude'] ?? null,
+                    'longitude'=>$station['longitude'] ?? null,
+                    'source'=>'static'
+                ];
+                if(($display['location_mode'] ?? 'static')==='live') {
+                    $latField=(string)($display['latitude_field'] ?? '');
+                    $lonField=(string)($display['longitude_field'] ?? '');
+                    if($latField!=='' && $lonField!=='' && isset($station['fields'][$latField],$station['fields'][$lonField])) {
+                        $safeLat=lakestat_safe_identifier($latField);
+                        $safeLon=lakestat_safe_identifier($lonField);
+                        $gps=$pdo->query("SELECT `{$safeLat}` AS lat, `{$safeLon}` AS lon, `observed_at`
+                                         FROM `{$table}` ORDER BY `observed_at` DESC LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+                        $lat=$gps['lat'] ?? null; $lon=$gps['lon'] ?? null;
+                        $valid=is_numeric($lat) && is_numeric($lon) && (float)$lat!=0.0 && (float)$lon!=0.0;
+                        if($valid) {
+                            $mapInfo=['latitude'=>(float)$lat,'longitude'=>(float)$lon,'source'=>'live','observed_at'=>$gps['observed_at'] ?? null];
+                        } elseif(empty($display['fallback_static'])) {
+                            $mapInfo=['latitude'=>null,'longitude'=>null,'source'=>'none'];
+                        } else {
+                            $mapInfo['source']='fallback';
+                        }
+                    } elseif(empty($display['fallback_static'])) {
+                        $mapInfo=['latitude'=>null,'longitude'=>null,'source'=>'none'];
+                    } else {
+                        $mapInfo['source']='fallback';
+                    }
+                }
+                $mapData[$id]=$mapInfo;
+                continue;
+            }
 
             if ($type === 'line') {
                 $seriesConfig = [];
@@ -298,6 +391,8 @@ try {
                 $maxRows = (int)$publicLimits['max_dashboard_rows'];
                 $wasDownsampled = false;
                 $sourceRowCount = 0;
+                $sampleMinId = 0;
+                $sampleMaxId = 0;
 
                 $select = ['`observed_at`','`received_at`'];
 
@@ -312,8 +407,8 @@ try {
                 }
 
                 if($customDateRange && $rangeStartUtc!==null && $rangeEndUtc!==null) {
-                    $where = "COALESCE(`observed_at`,`received_at`) >= :range_start
-                              AND COALESCE(`observed_at`,`received_at`) < :range_end
+                    $where = "`observed_at` >= :range_start
+                              AND `observed_at` < :range_end
                               AND (".implode(' OR ',$nonnullParts).")";
 
                     if($slimHealthDashboard) {
@@ -322,7 +417,7 @@ try {
                         $sql = "SELECT ".implode(', ', $select)."
                                 FROM `{$table}`
                                 WHERE {$where}
-                                ORDER BY COALESCE(`observed_at`,`received_at`) ASC";
+                                ORDER BY `observed_at` ASC";
                         $stmt=$pdo->prepare($sql);
                         $stmt->execute([
                             ':range_start'=>$rangeStartUtc,
@@ -331,19 +426,23 @@ try {
                         $rows=$stmt->fetchAll();
                         $sourceRowCount=count($rows);
                     } else {
-                        $countSql="SELECT COUNT(*) FROM `{$table}` WHERE {$where}";
+                        $countSql="SELECT COUNT(*) AS n, MIN(`id`) AS min_id, MAX(`id`) AS max_id
+                                   FROM `{$table}` WHERE {$where}";
                         $countStmt=$pdo->prepare($countSql);
                         $countStmt->execute([
                             ':range_start'=>$rangeStartUtc,
                             ':range_end'=>$rangeEndUtc
                         ]);
-                        $sourceRowCount=(int)$countStmt->fetchColumn();
+                        $countMeta=$countStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+                        $sourceRowCount=(int)($countMeta['n'] ?? 0);
+                        $sampleMinId=(int)($countMeta['min_id'] ?? 0);
+                        $sampleMaxId=(int)($countMeta['max_id'] ?? 0);
 
                         if($sourceRowCount <= $maxRows) {
                             $sql = "SELECT ".implode(', ', $select)."
                                     FROM `{$table}`
                                     WHERE {$where}
-                                    ORDER BY COALESCE(`observed_at`,`received_at`) ASC";
+                                    ORDER BY `observed_at` ASC";
                             $stmt=$pdo->prepare($sql);
                             $stmt->execute([
                                 ':range_start'=>$rangeStartUtc,
@@ -354,16 +453,14 @@ try {
                             // Systematically select raw observations across the complete
                             // requested interval. Values are not averaged or aggregated.
                             $stride=max(1,(int)ceil($sourceRowCount/$maxRows));
-                            $innerSelect=implode(', ', $select);
-                            $sql = "SELECT `observed_at`,`received_at`, ".implode(', ',array_map(fn($f)=>"`{$f}`",$safeFields))."
-                                    FROM (
-                                        SELECT {$innerSelect},
-                                               ROW_NUMBER() OVER (ORDER BY COALESCE(`observed_at`,`received_at`) ASC) AS slim_rn
-                                        FROM `{$table}`
-                                        WHERE {$where}
-                                    ) slim_sample
-                                    WHERE MOD(slim_rn - 1, {$stride}) = 0 OR slim_rn = {$sourceRowCount}
-                                    ORDER BY COALESCE(`observed_at`,`received_at`) ASC";
+                            // Visualization downsampling uses the monotonic primary key rather
+                            // than a ROW_NUMBER() window sort. Gaps in IDs are acceptable here:
+                            // this is display sampling, not statistical aggregation.
+                            $sql = "SELECT ".implode(', ', $select)."
+                                    FROM `{$table}`
+                                    WHERE {$where}
+                                      AND (MOD(`id` - {$sampleMinId}, {$stride}) = 0 OR `id` = {$sampleMaxId})
+                                    ORDER BY `observed_at` ASC";
                             $stmt=$pdo->prepare($sql);
                             $stmt->execute([
                                 ':range_start'=>$rangeStartUtc,
@@ -376,7 +473,7 @@ try {
 
                 } else {
                     $latestSeriesSql=
-                        "SELECT MAX(COALESCE(`observed_at`,`received_at`))
+                        "SELECT MAX(`observed_at`)
                          FROM `{$table}`
                          WHERE ".implode(' OR ',$nonnullParts);
 
@@ -400,42 +497,42 @@ try {
                             ->sub(new DateInterval('PT'.$hours.'H'))
                             ->format('Y-m-d H:i:s');
 
-                        $where = "COALESCE(`observed_at`,`received_at`) >= :cutoff
-                                  AND COALESCE(`observed_at`,`received_at`) <= :latest
+                        $where = "`observed_at` >= :cutoff
+                                  AND `observed_at` <= :latest
                                   AND (".implode(' OR ',$nonnullParts).")";
 
                         if($slimHealthDashboard) {
                             $sql = "SELECT ".implode(', ', $select)."
                                     FROM `{$table}` WHERE {$where}
-                                    ORDER BY COALESCE(`observed_at`,`received_at`) ASC";
+                                    ORDER BY `observed_at` ASC";
                             $stmt=$pdo->prepare($sql);
                             $stmt->execute([':cutoff'=>$cutoff,':latest'=>$latestSeriesTime]);
                             $rows=$stmt->fetchAll();
                             $sourceRowCount=count($rows);
                         } else {
-                            $countSql="SELECT COUNT(*) FROM `{$table}` WHERE {$where}";
+                            $countSql="SELECT COUNT(*) AS n, MIN(`id`) AS min_id, MAX(`id`) AS max_id
+                                       FROM `{$table}` WHERE {$where}";
                             $countStmt=$pdo->prepare($countSql);
                             $countStmt->execute([':cutoff'=>$cutoff,':latest'=>$latestSeriesTime]);
-                            $sourceRowCount=(int)$countStmt->fetchColumn();
+                            $countMeta=$countStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+                            $sourceRowCount=(int)($countMeta['n'] ?? 0);
+                            $sampleMinId=(int)($countMeta['min_id'] ?? 0);
+                            $sampleMaxId=(int)($countMeta['max_id'] ?? 0);
 
                             if($sourceRowCount <= $maxRows) {
                                 $sql = "SELECT ".implode(', ', $select)."
                                         FROM `{$table}` WHERE {$where}
-                                        ORDER BY COALESCE(`observed_at`,`received_at`) ASC";
+                                        ORDER BY `observed_at` ASC";
                                 $stmt=$pdo->prepare($sql);
                                 $stmt->execute([':cutoff'=>$cutoff,':latest'=>$latestSeriesTime]);
                                 $rows=$stmt->fetchAll();
                             } else {
                                 $stride=max(1,(int)ceil($sourceRowCount/$maxRows));
-                                $innerSelect=implode(', ', $select);
-                                $sql = "SELECT `observed_at`,`received_at`, ".implode(', ',array_map(fn($f)=>"`{$f}`",$safeFields))."
-                                        FROM (
-                                            SELECT {$innerSelect},
-                                                   ROW_NUMBER() OVER (ORDER BY COALESCE(`observed_at`,`received_at`) ASC) AS slim_rn
-                                            FROM `{$table}` WHERE {$where}
-                                        ) slim_sample
-                                        WHERE MOD(slim_rn - 1, {$stride}) = 0 OR slim_rn = {$sourceRowCount}
-                                        ORDER BY COALESCE(`observed_at`,`received_at`) ASC";
+                                $sql = "SELECT ".implode(', ', $select)."
+                                        FROM `{$table}`
+                                        WHERE {$where}
+                                          AND (MOD(`id` - {$sampleMinId}, {$stride}) = 0 OR `id` = {$sampleMaxId})
+                                        ORDER BY `observed_at` ASC";
                                 $stmt=$pdo->prepare($sql);
                                 $stmt->execute([':cutoff'=>$cutoff,':latest'=>$latestSeriesTime]);
                                 $rows=$stmt->fetchAll();
@@ -516,17 +613,15 @@ try {
                 $field = lakestat_safe_identifier($field);
                 $recentN = max(1, (int)($display['recent_n'] ?? 3));
 
-                $sql = "SELECT `{$field}`
-                        FROM `{$table}`
-                        WHERE `{$field}` IS NOT NULL
-                        ORDER BY COALESCE(`observed_at`,`received_at`) DESC
-                        LIMIT {$recentN}";
-
                 $vals = [];
-
-                foreach ($pdo->query($sql)->fetchAll() as $row) {
-                    $v = nval($row[$field]);
-                    if ($v !== null) $vals[] = $v;
+                // Match the previous semantics: take the most recent N non-null
+                // values for this field from the shared recent-row cache.
+                foreach ($recentRows as $row) {
+                    $v = nval($row[$field] ?? null);
+                    if ($v !== null) {
+                        $vals[] = $v;
+                        if(count($vals)>=$recentN) break;
+                    }
                 }
 
                 $avg = $vals ? array_sum($vals) / count($vals) : null;
@@ -561,17 +656,13 @@ try {
 
                     $safeField = lakestat_safe_identifier($field);
 
-                    $sql = "SELECT `{$safeField}`
-                            FROM `{$table}`
-                            WHERE `{$safeField}` IS NOT NULL
-                            ORDER BY COALESCE(`observed_at`,`received_at`) DESC
-                            LIMIT {$recentN}";
-
                     $vals = [];
-
-                    foreach ($pdo->query($sql)->fetchAll() as $row) {
-                        $v = nval($row[$safeField]);
-                        if ($v !== null) $vals[] = $v;
+                    foreach ($recentRows as $row) {
+                        $v = nval($row[$safeField] ?? null);
+                        if ($v !== null) {
+                            $vals[] = $v;
+                            if(count($vals)>=$recentN) break;
+                        }
                     }
 
                     if (!$vals) continue;
@@ -762,15 +853,13 @@ foreach ($displayConfig['displays'] as $display) {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title><?= $station ? h($station['name']).($slimHealthDashboard ? ' — Station Health' : '') : ($slimHealthDashboard ? 'SLIM Station Health Dashboard' : 'SLIM Dashboard') ?></title>
+<title><?= $station ? h($station['name']).($slimHealthDashboard ? ' — Station Health' : '') : ($slimHealthDashboard ? 'Station Health Dashboard' : 'Dashboard') ?></title>
 
-<script src="https://code.highcharts.com/highcharts.js"></script>
-<script src="https://code.highcharts.com/highcharts-more.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/dygraph/2.2.1/dygraph.min.js"></script>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/dygraph/2.2.1/dygraph.min.css">
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<?php $dashboardAssetBase = $slimHealthDashboard ? '../../assets' : '../assets'; ?>
+<script src="<?= h($dashboardAssetBase) ?>/vendor/dygraphs/dygraph.min.js"></script>
+<link rel="stylesheet" href="<?= h($dashboardAssetBase) ?>/vendor/dygraphs/dygraph.min.css">
+<link rel="stylesheet" href="<?= h($dashboardAssetBase) ?>/vendor/leaflet/leaflet.css">
+<script src="<?= h($dashboardAssetBase) ?>/vendor/leaflet/leaflet.js"></script>
 
 <style>
 :root {
@@ -815,7 +904,7 @@ html,body {
 body {
     background:var(--navy);
     color:var(--text-prim);
-    font-family:'Space Grotesk',system-ui,sans-serif;
+    font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;
     font-size:15px;
     line-height:1.6;
     min-height:100vh;
@@ -870,7 +959,7 @@ body {
 
 .site-subtitle {
     color:var(--text-sec);
-    font-family:'IBM Plex Mono',monospace;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;
     font-size:13px;
 }
 
@@ -880,7 +969,7 @@ body {
     gap:8px;
     margin-top:8px;
     color:var(--text-sec);
-    font-family:'IBM Plex Mono',monospace;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;
     font-size:12px;
 }
 
@@ -890,7 +979,7 @@ body {
 }
 
 .timezone-name {
-    color:var(--text-mute);
+    color:var(--text-sec);
 }
 
 .refresh-badge {
@@ -903,7 +992,7 @@ body {
     border-radius:20px;
     background:rgba(0,194,255,0.10);
     color:var(--accent);
-    font-family:'IBM Plex Mono',monospace;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;
     font-size:13px;
 }
 
@@ -933,14 +1022,32 @@ body {
     50% { opacity:.4; transform:scale(.7); }
 }
 
+.station-switcher {
+    display:flex;
+    align-items:center;
+    gap:8px;
+}
+
 .station-select {
     background:var(--navy-card);
     color:var(--text-prim);
     border:1px solid var(--border);
     border-radius:var(--radius);
     padding:8px 10px;
-    font-family:'IBM Plex Mono',monospace;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;
 }
+
+.station-go {
+    min-height:38px;
+    padding:7px 12px;
+    border:1px solid var(--border);
+    border-radius:7px;
+    background:var(--navy-light);
+    color:var(--accent);
+    font:inherit;
+    cursor:pointer;
+}
+.station-go:hover,.station-go:focus-visible { border-color:var(--accent); }
 
 .links-row {
     display:flex;
@@ -1003,17 +1110,6 @@ body {
 .text-display-copy .slim-text-xlarge{font-size:33px}
 
 
-/* Keep Highcharts wind-rose tooltips readable regardless of dashboard theme. */
-.highcharts-tooltip,
-.highcharts-tooltip span,
-.highcharts-tooltip div {
-    color:#263238 !important;
-}
-
-.highcharts-tooltip-box {
-    fill:#ffffff !important;
-    stroke:#546e7a !important;
-}
 
 .date-range-panel.embedded{
     margin:0;
@@ -1030,7 +1126,7 @@ body {
 .date-range-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .date-range-actions button,.date-reset{display:inline-flex;align-items:center;min-height:38px;padding:7px 12px;border:1px solid var(--border);border-radius:7px;background:var(--navy-light);color:var(--accent);text-decoration:none;font:inherit;cursor:pointer}
 .date-range-actions button:hover,.date-reset:hover{border-color:var(--accent)}
-.date-range-hint{margin-top:8px;color:var(--text-mute);font-size:13px}
+.date-range-hint{margin-top:8px;color:var(--text-sec);font-size:13px}
 .date-range-error{margin-top:8px;color:#e07070;font-size:13px}
 
 .section-label {
@@ -1139,7 +1235,7 @@ body {
 }
 
 .gauge-value {
-    font-family:'IBM Plex Mono',monospace;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;
     font-size:22px;
     font-weight:500;
 }
@@ -1152,6 +1248,10 @@ body {
 
 .gauge-note {
     margin-top:8px;
+    text-align:center;
+    white-space:normal;
+    overflow-wrap:break-word;
+    line-height:1.4;
     color:#fff;
     font-size:14px;
     font-weight:500;
@@ -1164,7 +1264,7 @@ body {
     color:#fff;
     font-size:14px;
     font-weight:500;
-    font-family:'IBM Plex Mono',monospace;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;
     margin-top:6px;
 }
 
@@ -1236,14 +1336,14 @@ body {
 
 .gauge-bar-value {
     margin-top:12px;
-    font-family:'IBM Plex Mono',monospace;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;
     font-size:26px;
     font-weight:500;
     text-align:center;
 }
 
 .gauge-numeric-value {
-    font-family:'IBM Plex Mono',monospace;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;
     color:var(--gauge-color);
     font-size:44px;
     line-height:1.05;
@@ -1263,7 +1363,7 @@ body {
     font-size:14px;
     font-weight:500;
     margin-top:10px;
-    font-family:'IBM Plex Mono',monospace;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;
 }
 
 .display-grid {
@@ -1313,7 +1413,7 @@ body {
 .display-note {
     margin-top:2px;
     color:var(--text-sec);
-    font-family:'IBM Plex Mono',monospace;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;
     font-size:13px;
 }
 
@@ -1330,18 +1430,41 @@ body {
 }
 
 .dygraph-target,
-.highcharts-polar-target {
+.slim-polar-target {
     width:100%;
     height:100%;
+}
+.slim-polar-target svg {
+    display:block;
+    width:100%;
+    height:100%;
+    max-width:100%;
+    max-height:100%;
 }
 
 .dygraph-label,
 .dygraph-title,
-.dygraph-xlabel,
-.dygraph-ylabel,
-.dygraph-legend,
+.dygraph-legend {
+    color:#111 !important;
+}
+
 .dygraph-axis-label {
     color:#111 !important;
+    font-size:14px !important;
+}
+
+/* Axis titles should be more prominent than tick values. */
+.dygraph-xlabel,
+.dygraph-ylabel {
+    color:#111 !important;
+    font-size:18px !important;
+    font-weight:600;
+}
+
+.dygraph-roller {
+    color:#111 !important;
+    background-color:#fff !important;
+    border:1px solid #666 !important;
 }
 
 .dygraph-legend {
@@ -1369,7 +1492,7 @@ body {
 .profile-legend-value {
     color:#fff;
     font-size:13px;
-    font-family:'IBM Plex Mono',monospace;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;
     line-height:1.2;
     margin:5px 0;
 }
@@ -1417,7 +1540,7 @@ body {
 .stat-chip strong {
     display:block;
     margin-top:1px;
-    font-family:'IBM Plex Mono',monospace;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;
     font-size:14px;
 }
 
@@ -1430,7 +1553,7 @@ body {
 
 .vector-current {
     text-align:right;
-    font-family:'IBM Plex Mono',monospace;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;
 }
 
 .vector-current strong {
@@ -1461,7 +1584,7 @@ body {
     flex-wrap:wrap;
     padding:0 18px 16px;
     color:var(--text-sec);
-    font-family:'IBM Plex Mono',monospace;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;
     font-size:13px;
 }
 
@@ -1601,7 +1724,7 @@ body.slim-public-dashboard .slim-version-footer{font-size:14px}
             <?php if($logoMode==='logo_and_name' && $organizationName!==''): ?>
             <div class="organization-name"><?= h($organizationName) ?></div>
             <?php elseif($logoMode==='title_only'): ?>
-            <div class="site-title"><?= $slimHealthDashboard ? 'SLIM Station Health' : 'SLIM' ?></div>
+            <div class="site-title"><?= h($organizationName !== '' ? $organizationName : (string)($site['site_title'] ?? 'Monitoring Dashboard')) ?></div>
             <?php endif; ?>
         </div>
 
@@ -1636,21 +1759,23 @@ body.slim-public-dashboard .slim-version-footer{font-size:14px}
         <div class="local-time-row">
             <span>Local time:</span>
             <strong id="slim-local-clock">--</strong>
-            <span class="timezone-name"><?= h((string)$system['timezone']) ?></span>
+            <span class="timezone-name"><?= h($stationTimezone) ?></span>
         </div>
         <?php endif; ?>
         <?php endif; ?>
     </div>
 
     <?php if ($stations): ?>
-    <form method="get">
-        <select class="station-select" name="station" onchange="this.form.submit()">
+    <form method="get" class="station-switcher">
+        <label class="slim-visually-hidden" for="slim-dashboard-station">Select a dashboard</label>
+        <select class="station-select" id="slim-dashboard-station" name="station">
         <?php foreach ($stations as $code=>$info): ?>
             <option value="<?= h($code) ?>" <?= $stationCode===$code?'selected':'' ?>>
                 <?= h($info['name']) ?> — <?= h($code) ?>
             </option>
         <?php endforeach; ?>
         </select>
+        <button type="submit" class="station-go">Go</button>
     </form>
     <?php endif; ?>
 </header>
@@ -1754,7 +1879,7 @@ $type=$display['type'] ?? '';
                 <?php else: ?>
                 Choose up to <?= (int)$maxPlotDays ?> calendar days. Large datasets are automatically downsampled across the selected period to limit the number of points displayed.
                 <?php endif; ?>
-                Calendar dates use <?= h((string)$system['timezone']) ?>.
+                Calendar dates use <?= h($stationTimezone) ?>.
             </div>
             <?php if($dateRangeError!==''): ?>
             <div class="date-range-error"><?= h($dateRangeError) ?></div>
@@ -1826,7 +1951,7 @@ $formattedValue=$value===null?'—':number_format($value,$dec);
         <div class="gauge-scale-labels"><span><?= h(number_format($min,$dec)) ?></span><span><?= h(number_format($max,$dec)) ?></span></div>
     <?php endif; ?>
 
-    <div class="gauge-note">Avg. <?= (int)$g['count'] ?> recent valid</div>
+    <div class="gauge-note">Avg. of <?= (int)$g['count'] ?> recent observations</div>
 </div>
 
 <?php elseif($type==='image'): ?>
@@ -1856,13 +1981,20 @@ if($imagePath!==''){
 </div>
 
 <?php elseif($type==='map'): ?>
-<?php $mapHeight=max(220,min(700,(int)($display['height'] ?? 360))); ?>
+<?php
+$mapHeight=max(220,min(700,(int)($display['height'] ?? 360)));
+$resolvedMap=$mapData[$id] ?? ['latitude'=>$station['latitude'] ?? null,'longitude'=>$station['longitude'] ?? null,'source'=>'static'];
+$mapSourceLabel=$resolvedMap['source']==='live' ? 'Live GPS' : ($resolvedMap['source']==='fallback' ? 'Static station coordinates (fallback)' : 'Static station coordinates');
+?>
 <div class="display-card <?= h(display_width_class($display)) ?>">
     <div class="display-header">
         <div>
             <div class="display-note">
-                <?= h(number_format((float)$station['latitude'],4)) ?>,
-                <?= h(number_format((float)$station['longitude'],4)) ?>
+                <?php if($resolvedMap['latitude']!==null && $resolvedMap['longitude']!==null): ?>
+                <?= h(number_format((float)$resolvedMap['latitude'],4)) ?>,
+                <?= h(number_format((float)$resolvedMap['longitude'],4)) ?>
+                — Location source: <?= h($mapSourceLabel) ?>
+                <?php endif; ?>
             </div>
         </div>
     </div>
@@ -1982,7 +2114,7 @@ $current=count($pts)?$pts[0]:null;
 
     <?php if($current): ?>
     <div class="display-body">
-        <svg id="direction-svg-<?= h($id) ?>" class="direction-svg" viewBox="0 0 500 410"
+        <svg id="direction-svg-<?= h($id) ?>" class="direction-svg" viewBox="0 0 500 475"
              role="img"
              aria-labelledby="direction-title-<?= h($id) ?> direction-desc-<?= h($id) ?>">
             <title id="direction-title-<?= h($id) ?>"><?= h(($display['title'] ?? 'Current Direction').' chart') ?></title>
@@ -2068,7 +2200,7 @@ if(!empty($lineData[$id]['downsampled'])){
 
     <div class="display-body">
         <?php if($pointCount>0): ?>
-        <div class="chart-wrap" aria-hidden="true">
+        <div class="chart-wrap" role="group" aria-labelledby="line-title-<?= h($id) ?>" aria-describedby="line-desc-<?= h($id) ?>">
             <div id="chart-<?= h($id) ?>" class="dygraph-target"></div>
         </div>
 
@@ -2106,15 +2238,15 @@ if(!empty($lineData[$id]['downsampled'])){
 
     <div class="display-body">
         <?php if(count($polarData[$id]['points'])>0): ?>
-        <div class="chart-wrap"><div id="polar-<?= h($id) ?>" class="highcharts-polar-target"></div></div>
+        <div class="chart-wrap"><div id="polar-<?= h($id) ?>" class="slim-polar-target"></div></div>
         <?php
             $polarStart = $polarData[$id]['observed_start'] ?? '';
             $polarEnd = $polarData[$id]['observed_end'] ?? '';
             $polarCount = (int)($polarData[$id]['observation_count'] ?? count($polarData[$id]['points']));
-            $formatObserved = static function($value) {
+            $formatObserved = static function($value) use ($displayTimezone) {
                 if ($value === '') return '';
                 try {
-                    return (new DateTime($value))->format('M j, Y g:i A');
+                    return (new DateTimeImmutable((string)$value,new DateTimeZone('UTC')))->setTimezone($displayTimezone)->format('M j, Y g:i A T');
                 } catch (Throwable $e) {
                     return (string)$value;
                 }
@@ -2144,11 +2276,11 @@ if(!empty($lineData[$id]['downsampled'])){
 </div>
 
 <script>
-const lineData = <?= json_encode($lineData,JSON_UNESCAPED_SLASHES) ?>;
-const profileData = <?= json_encode($profileData,JSON_UNESCAPED_SLASHES) ?>;
-const polarData = <?= json_encode($polarData,JSON_UNESCAPED_SLASHES) ?>;
-const directionalData = <?= json_encode($directionalRecentData,JSON_UNESCAPED_SLASHES) ?>;
-const displayConfig = <?= json_encode($displayConfig['displays'],JSON_UNESCAPED_SLASHES) ?>;
+const lineData = <?= json_encode($lineData,JSON_UNESCAPED_SLASHES|JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?>;
+const profileData = <?= json_encode($profileData,JSON_UNESCAPED_SLASHES|JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?>;
+const polarData = <?= json_encode($polarData,JSON_UNESCAPED_SLASHES|JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?>;
+const directionalData = <?= json_encode($directionalRecentData,JSON_UNESCAPED_SLASHES|JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?>;
+const displayConfig = <?= json_encode($displayConfig['displays'],JSON_UNESCAPED_SLASHES|JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?>;
 
 function getDisplay(id) {
     for(let i=0;i<displayConfig.length;i++) {
@@ -2266,6 +2398,11 @@ Object.keys(lineData).forEach(function(id){
 
     const hasY2=source.datasets.some(function(ds){return ds.axis==='y2';});
 
+    const chartTimezone=<?= json_encode($stationTimezone,JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?>;
+    const chartDateTime=new Intl.DateTimeFormat(undefined,{timeZone:chartTimezone,year:'numeric',month:'short',day:'numeric',hour:'numeric',minute:'2-digit',second:'2-digit'});
+    const chartDate=new Intl.DateTimeFormat(undefined,{timeZone:chartTimezone,month:'short',day:'numeric'});
+    const chartTime=new Intl.DateTimeFormat(undefined,{timeZone:chartTimezone,hour:'2-digit',minute:'2-digit'});
+    const chartParts=new Intl.DateTimeFormat('en-US',{timeZone:chartTimezone,hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
     const options={
         labels:labels,
         colors:colors,
@@ -2284,8 +2421,9 @@ Object.keys(lineData).forEach(function(id){
         ylabel:source.y_label || '',
         y2label:hasY2 ? (source.y2_label || '') : '',
         rightGap:hasY2 ? 48 : 20,
-        xLabelHeight:24,
-        axisLabelFontSize:12,
+        xLabelHeight:40,
+        yLabelWidth:24,
+        axisLabelFontSize:14,
         legend:(display && display.show_legend) ? 'always' : 'never',
         labelsSeparateLines:true,
         connectSeparatedPoints:true,
@@ -2296,32 +2434,30 @@ Object.keys(lineData).forEach(function(id){
         axes:{
             x:{
                 valueFormatter:function(ms){
-                    return new Date(ms).toLocaleString();
+                    return chartDateTime.format(new Date(ms))+' ('+chartTimezone+')';
                 },
                 axisLabelFormatter:function(date){
                     const d=(date instanceof Date) ? date : new Date(date);
 
                     // Mark the change of calendar day on the time axis.
                     // Midnight receives a date label; other ticks remain time.
-                    if(d.getHours()===0 && d.getMinutes()===0){
-                        return d.toLocaleDateString([],{
-                            month:'short',
-                            day:'numeric'
-                        });
+                    const parts=chartParts.formatToParts(d);
+                    const hour=parts.find(p=>p.type==='hour');
+                    const minute=parts.find(p=>p.type==='minute');
+                    if(hour && minute && hour.value==='00' && minute.value==='00') {
+                        return chartDate.format(d);
                     }
-
-                    return d.toLocaleTimeString([],{
-                        hour:'2-digit',
-                        minute:'2-digit'
-                    });
+                    return chartTime.format(d);
                 }
             },
             y:{
+                axisLabelWidth:62,
                 valueFormatter:function(v){
                     return Number(v).toFixed(2);
                 }
             },
             y2:{
+                axisLabelWidth:62,
                 independentTicks:true,
                 drawGrid:false,
                 valueFormatter:function(v){
@@ -2343,26 +2479,41 @@ Object.keys(lineData).forEach(function(id){
         options.valueRange=[null,Number(display.y_max)];
     }
 
-    new Dygraph(target,rows,options);
+    const graph=new Dygraph(target,rows,options);
+
+    // Dygraphs creates its rolling-average input dynamically. Give that form
+    // control an explicit accessible label so it is identifiable to assistive
+    // technology and accessibility checkers.
+    const roller=target.querySelector('.dygraph-roller');
+    if(roller){
+        const rollerId='dygraph-roller-'+id;
+        roller.id=rollerId;
+        roller.setAttribute('aria-describedby','line-desc-'+id);
+        const rollerLabel=document.createElement('label');
+        rollerLabel.htmlFor=rollerId;
+        rollerLabel.className='slim-visually-hidden';
+        rollerLabel.textContent='Rolling average period for '+((display && display.title) ? display.title : 'time series')+' (observations)';
+        target.parentNode.insertBefore(rollerLabel,target);
+    }
 });
 
 
 const mapDisplays = displayConfig.filter(function(display){ return display.type==='map'; });
 const stationMapInfo = <?= json_encode([
     'name' => $station ? ($station['name'] ?? $stationCode) : '',
-    'latitude' => $station ? ($station['latitude'] ?? null) : null,
-    'longitude' => $station ? ($station['longitude'] ?? null) : null
-],JSON_UNESCAPED_SLASHES) ?>;
+    'maps' => $mapData
+],JSON_UNESCAPED_SLASHES|JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?>;
 
 mapDisplays.forEach(function(display){
     const target=document.getElementById('map-'+display.id);
+    const info=stationMapInfo.maps[display.id] || null;
 
-    if(!target || stationMapInfo.latitude===null || stationMapInfo.longitude===null){
+    if(!target || !info || info.latitude===null || info.longitude===null){
         return;
     }
 
-    const lat=Number(stationMapInfo.latitude);
-    const lon=Number(stationMapInfo.longitude);
+    const lat=Number(info.latitude);
+    const lon=Number(info.longitude);
     const zoom=Number(display.zoom || 11);
 
     const map=L.map(target,{
@@ -2475,7 +2626,7 @@ Object.keys(profileData).forEach(function(id){
         'text-anchor':'middle',
         fill:'#7a9bbf',
         'font-size':13,
-        'font-family':'Space Grotesk'
+        'font-family':'system-ui'
     });
     surface.textContent=source.coordinate_label.toUpperCase();
     svg.appendChild(surface);
@@ -2514,7 +2665,7 @@ Object.keys(profileData).forEach(function(id){
             'text-anchor':'end',
             fill:'#7a9bbf',
             'font-size':13,
-            'font-family':'IBM Plex Mono'
+            'font-family':'monospace'
         });
         left.textContent=Number(p.position).toFixed(1)+' '+source.coordinate_units;
         svg.appendChild(left);
@@ -2524,7 +2675,7 @@ Object.keys(profileData).forEach(function(id){
             y:y+5,
             fill:'#e8f0fe',
             'font-size':14,
-            'font-family':'IBM Plex Mono'
+            'font-family':'monospace'
         });
         right.textContent=Number(p.value).toFixed(1)+' '+source.value_units;
         svg.appendChild(right);
@@ -2591,7 +2742,7 @@ Object.keys(directionalData).forEach(function(id){
             fill:text,
             'font-size':18,
             'font-weight':600,
-            'font-family':'Space Grotesk'
+            'font-family':'system-ui'
         });
         t.textContent=item[0];
         svg.appendChild(t);
@@ -2644,23 +2795,23 @@ Object.keys(directionalData).forEach(function(id){
     }));
 
     const primary=svgEl('text',{
-        x:cx,y:cy+177,
+        x:cx,y:cy+208,
         'text-anchor':'middle',
         fill:text,
         'font-size':22,
         'font-weight':600,
-        'font-family':'IBM Plex Mono'
+        'font-family':'monospace'
     });
 
     primary.textContent=cardinal(Number(latest.direction))+'  '+Math.round(Number(latest.direction))+'°';
     svg.appendChild(primary);
 
     const secondary=svgEl('text',{
-        x:cx,y:cy+199,
+        x:cx,y:cy+250,
         'text-anchor':'middle',
         fill:muted,
-        'font-size':12,
-        'font-family':'Space Grotesk'
+        'font-size':24,
+        'font-family':'system-ui'
     });
 
     secondary.textContent=source.direction_label;
@@ -2668,225 +2819,43 @@ Object.keys(directionalData).forEach(function(id){
 });
 
 Object.keys(polarData).forEach(function(id){
-    const target=document.getElementById('polar-'+id);
-    if(!target || typeof Highcharts==='undefined')return;
-
-    const source=polarData[id];
-    const raw=(source.points || []).map(function(p){
-        return {
-            direction:Number(p.direction),
-            magnitude:Number(p.magnitude),
-            time:p.time || ''
-        };
-    }).filter(function(p){
-        return Number.isFinite(p.direction) &&
-               Number.isFinite(p.magnitude) &&
-               p.magnitude>=0;
-    });
-
-    if(raw.length===0)return;
-
-    const display=getDisplay(id) || {};
-    const sectorCount=Math.max(8,Math.min(36,Number(display.windrose_sectors || 16)));
-    const sectorWidth=360/sectorCount;
-
-    // Magnitude bins can be configured in Dashboard Setup. If none are saved,
-    // derive five equal-width bins from the observed range.
-    let breaks=Array.isArray(display.windrose_breaks)
-        ? display.windrose_breaks.map(Number).filter(Number.isFinite).sort(function(a,b){return a-b;})
-        : [];
-
-    if(breaks.length<2){
-        const maxMag=Math.max.apply(null,raw.map(function(p){return p.magnitude;}));
-        const top=maxMag>0 ? maxMag : 1;
-        breaks=[0,top*0.2,top*0.4,top*0.6,top*0.8,top+Number.EPSILON];
-    } else {
-        if(breaks[0]>0)breaks.unshift(0);
-        const maxMag=Math.max.apply(null,raw.map(function(p){return p.magnitude;}));
-        if(breaks[breaks.length-1] <= maxMag){
-            breaks.push(maxMag+Number.EPSILON);
-        }
-    }
-
-    const labels=[];
-    for(let i=0;i<sectorCount;i++){
-        const center=i*sectorWidth;
-        labels.push(center);
-    }
-
-    const counts=[];
-    for(let b=0;b<breaks.length-1;b++){
-        counts[b]=new Array(sectorCount).fill(0);
-    }
-
-    raw.forEach(function(p){
-        let dir=((p.direction%360)+360)%360;
-
-        // Center sectors on the cardinal/intercardinal bearings.
-        let sector=Math.floor((dir + sectorWidth/2)/sectorWidth)%sectorCount;
-
-        let bin=breaks.length-2;
-        for(let b=0;b<breaks.length-1;b++){
-            if(p.magnitude>=breaks[b] && p.magnitude<breaks[b+1]){
-                bin=b;
-                break;
-            }
-        }
-
-        counts[bin][sector]++;
-    });
-
-    const total=raw.length;
-    // Wind rose uses deliberately high-contrast neutral axis styling.
-    // This remains readable on the chart's white/light background regardless
-    // of the surrounding SLIM dashboard theme.
-    const styles=getComputedStyle(document.documentElement);
-    const text='#263238';
-    const muted='#455a64';
-    const border='#78909c';
-    const accent=styles.getPropertyValue('--accent').trim() || '#1976d2';
-
-    function cardinal16(deg){
-        const labels16=['N','NNE','NE','ENE','E','ESE','SE','SSE',
-                        'S','SSW','SW','WSW','W','WNW','NW','NNW'];
-        const n=((Number(deg)%360)+360)%360;
-        return labels16[Math.round(n/22.5)%16];
-    }
-
-    const series=counts.map(function(binCounts,b){
-        const low=breaks[b];
-        const high=breaks[b+1];
-        const last=(b===breaks.length-2);
-
-        let name;
-        if(last && !Number.isFinite(high)){
-            name='≥ '+Highcharts.numberFormat(low,1);
-        } else {
-            name=Highcharts.numberFormat(low,1)+'–'+Highcharts.numberFormat(high,1);
-        }
-
-        if(source.magnitude_units){
-            name+=' '+source.magnitude_units;
-        }
-
-        return {
-            type:'column',
-            name:name,
-            data:binCounts.map(function(c){
-                return total>0 ? (c/total)*100 : 0;
-            })
-        };
-    });
-
-    Highcharts.chart(target,{
-        chart:{
-            polar:true,
-            type:'column',
-            backgroundColor:'transparent',
-            animation:false,
-            spacing:[10,10,10,10]
-        },
-
-        title:{text:null},
-        credits:{enabled:false},
-
-        pane:{
-            startAngle:0,
-            endAngle:360
-        },
-
-        xAxis:{
-            categories:labels.map(function(deg){return cardinal16(deg);}),
-            tickmarkPlacement:'on',
-            lineWidth:0,
-            gridLineWidth:1,
-            gridLineColor:border,
-            labels:{
-                style:{
-                    color:text,
-                    fontSize:'12px',
-                    fontWeight:'700'
-                }
-            }
-        },
-
-        yAxis:{
-            min:0,
-            endOnTick:false,
-            showLastLabel:true,
-            gridLineInterpolation:'circle',
-            gridLineColor:border,
-            labels:{
-                style:{
-                    color:muted,
-                    fontSize:'12px',
-                    fontWeight:'600'
-                },
-                formatter:function(){
-                    return Highcharts.numberFormat(this.value,0)+'%';
-                }
-            },
-            title:{text:null}
-        },
-
-        legend:{
-            enabled:true,
-            align:'center',
-            verticalAlign:'bottom',
-            title:{
-                text:source.magnitude_units
-                    ? source.magnitude_label+' ('+source.magnitude_units+')'
-                    : source.magnitude_label,
-                style:{
-                    color:text,
-                    fontSize:'12px',
-                    fontWeight:'700'
-                }
-            },
-            itemStyle:{color:text,fontSize:'12px',fontWeight:'600'},
-            itemHoverStyle:{color:accent},
-            itemHiddenStyle:{color:muted},
-            symbolRadius:2
-        },
-
-        tooltip:{
-            shared:false,
-            useHTML:true,
-            backgroundColor:'#ffffff',
-            borderColor:'#546e7a',
-            borderWidth:1,
-            shadow:true,
-            style:{
-                color:'#263238',
-                fontSize:'12px'
-            },
-            formatter:function(){
-                return '<div style="color:#263238;font-size:12px;line-height:1.45;">'+
-                       '<strong style="color:#111111;">'+this.x+'</strong><br>'+
-                       '<span style="color:#263238;">'+this.series.name+': '+
-                       '<strong style="color:#111111;">'+
-                       Highcharts.numberFormat(this.y,1)+'%</strong></span>'+
-                       '</div>';
-            }
-        },
-
-        plotOptions:{
-            series:{
-                stacking:'normal',
-                shadow:false,
-                groupPadding:0,
-                pointPlacement:'on',
-                borderWidth:0,
-                animation:false
-            },
-            column:{
-                pointPadding:0,
-                groupPadding:0
-            }
-        },
-
-        series:series
-    });
+ const target=document.getElementById('polar-'+id); if(!target)return;
+ const source=polarData[id], display=getDisplay(id)||{};
+ const raw=(source.points||[]).map(function(p){return {direction:Number(p.direction),magnitude:Number(p.magnitude)};})
+  .filter(function(p){return Number.isFinite(p.direction)&&Number.isFinite(p.magnitude)&&p.magnitude>=0;});
+ if(!raw.length)return;
+ const n=Math.max(8,Math.min(36,Number(display.windrose_sectors||16))), w=360/n;
+ let br=Array.isArray(display.windrose_breaks)?display.windrose_breaks.map(Number).filter(Number.isFinite).sort(function(a,b){return a-b;}):[];
+ const maxMag=Math.max.apply(null,raw.map(function(p){return p.magnitude;}));
+ if(br.length<2){const top=maxMag>0?maxMag:1;br=[0,top*.2,top*.4,top*.6,top*.8,top+Number.EPSILON];}
+ else {if(br[0]>0)br.unshift(0);if(br[br.length-1]<=maxMag)br.push(maxMag+Number.EPSILON);}
+ const counts=Array.from({length:br.length-1},function(){return Array(n).fill(0);});
+ raw.forEach(function(p){const d=((p.direction%360)+360)%360,sec=Math.floor((d+w/2)/w)%n;let bin=br.length-2;
+  for(let b=0;b<br.length-1;b++){if(p.magnitude>=br[b]&&p.magnitude<br[b+1]){bin=b;break;}} counts[bin][sec]++;});
+ const pct=counts.map(function(row){return row.map(function(c){return c*100/raw.length;});}), totals=Array(n).fill(0);
+ for(let i=0;i<n;i++)for(let b=0;b<pct.length;b++)totals[i]+=pct[b][i];
+ const radialMax=Math.max(5,Math.ceil(Math.max.apply(null,totals.concat([1]))/5)*5),NS='http://www.w3.org/2000/svg';
+ function el(name,a){const x=document.createElementNS(NS,name);Object.keys(a||{}).forEach(function(k){x.setAttribute(k,String(a[k]));});return x;}
+ function pt(cx,cy,r,d){const a=(d-90)*Math.PI/180;return[cx+r*Math.cos(a),cy+r*Math.sin(a)];}
+ function sectorPath(cx,cy,r0,r1,a0,a1){const p1=pt(cx,cy,r1,a0),p2=pt(cx,cy,r1,a1),p3=pt(cx,cy,r0,a1),p4=pt(cx,cy,r0,a0),lg=(a1-a0)>180?1:0;
+  if(r0<=.01)return 'M '+cx+' '+cy+' L '+p1[0]+' '+p1[1]+' A '+r1+' '+r1+' 0 '+lg+' 1 '+p2[0]+' '+p2[1]+' Z';
+  return 'M '+p1[0]+' '+p1[1]+' A '+r1+' '+r1+' 0 '+lg+' 1 '+p2[0]+' '+p2[1]+' L '+p3[0]+' '+p3[1]+' A '+r0+' '+r0+' 0 '+lg+' 0 '+p4[0]+' '+p4[1]+' Z';}
+ function fmt(v){return Number(v).toLocaleString(undefined,{minimumFractionDigits:1,maximumFractionDigits:1});}
+ function card(d){const c=['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];return c[Math.round((((d%360)+360)%360)/22.5)%16];}
+ target.innerHTML='';
+ const svg=el('svg',{viewBox:'0 0 760 470',preserveAspectRatio:'xMidYMid meet',role:'img','aria-labelledby':'polar-title-'+id+' polar-desc-'+id});
+ let x=el('title',{id:'polar-title-'+id});x.textContent=display.title||'Polar plot';svg.appendChild(x);
+ x=el('desc',{id:'polar-desc-'+id});x.textContent='Wind rose showing percentage of observations by direction and '+(source.magnitude_label||'magnitude')+'.';svg.appendChild(x);
+ const cx=235,cy=225,R=175,text='#263238',muted='#455a64',grid='#90a4ae',st=getComputedStyle(document.documentElement);
+ const colors=[st.getPropertyValue('--accent').trim()||'#1976d2',st.getPropertyValue('--teal').trim()||'#00897b',st.getPropertyValue('--amber').trim()||'#f5a623',st.getPropertyValue('--purple').trim()||'#7e57c2','#ef5350','#66bb6a','#8d6e63','#78909c'];
+ for(let r=1;r<=4;r++){const rr=R*r/4;svg.appendChild(el('circle',{cx:cx,cy:cy,r:rr,fill:'none',stroke:grid,'stroke-opacity':.7}));const l=el('text',{x:cx+5,y:cy-rr+14,fill:muted,'font-size':22});l.textContent=Math.round(radialMax*r/4)+'%';svg.appendChild(l);}
+ for(let i=0;i<n;i++){const q=pt(cx,cy,R,i*w);svg.appendChild(el('line',{x1:cx,y1:cy,x2:q[0],y2:q[1],stroke:grid,'stroke-opacity':.55}));}
+ const gap=Math.min(1.2,w*.08);
+ for(let i=0;i<n;i++){let cum=0;for(let b=0;b<pct.length;b++){const val=pct[b][i];if(val<=0)continue;const r0=R*cum/radialMax;cum+=val;const r1=Math.min(R,R*cum/radialMax);const q=el('path',{d:sectorPath(cx,cy,r0,r1,i*w-w/2+gap,i*w+w/2-gap),fill:colors[b%colors.length],stroke:'#fff','stroke-width':.7,tabindex:0});const tip=el('title',{});tip.textContent=card(i*w)+' · '+fmt(br[b])+'–'+fmt(br[b+1])+(source.magnitude_units?' '+source.magnitude_units:'')+' · '+fmt(val)+'%';q.appendChild(tip);svg.appendChild(q);}}
+ const every=n>16?Math.ceil(n/16):1;for(let i=0;i<n;i+=every){const q=pt(cx,cy,R+34,i*w),l=el('text',{x:q[0],y:q[1]+4,'text-anchor':'middle',fill:text,'font-size':24,'font-weight':700});l.textContent=card(i*w);svg.appendChild(l);}
+ const lx=505,ly=95,lt=el('text',{x:lx,y:ly-22,fill:text,'font-size':24,'font-weight':700});lt.textContent=source.magnitude_units?source.magnitude_label+' ('+source.magnitude_units+')':source.magnitude_label;svg.appendChild(lt);
+ for(let b=0;b<br.length-1;b++){const y=ly+b*34;svg.appendChild(el('rect',{x:lx,y:y,width:22,height:22,rx:2,fill:colors[b%colors.length]}));const l=el('text',{x:lx+30,y:y+20,fill:text,'font-size':22});l.textContent=fmt(br[b])+'–'+fmt(br[b+1])+(source.magnitude_units?' '+source.magnitude_units:'');svg.appendChild(l);}
+ target.appendChild(svg);
 });
 </script>
 
@@ -2896,7 +2865,7 @@ Object.keys(polarData).forEach(function(id){
     const clock=document.getElementById('slim-local-clock');
     if(!clock)return;
 
-    const timeZone=<?= json_encode((string)$system['timezone']) ?>;
+    const timeZone=<?= json_encode($stationTimezone,JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?>;
 
     const formatter=new Intl.DateTimeFormat(undefined,{
         timeZone:timeZone,
@@ -2915,6 +2884,12 @@ Object.keys(polarData).forEach(function(id){
 
     updateSlimClock();
     setInterval(updateSlimClock,1000);
+
+    const autoRefreshEnabled=<?= !empty($system['auto_refresh_enabled'])?'true':'false' ?>;
+    const refreshSeconds=<?= max(15,(int)($system['refresh_seconds'] ?? 600)) ?>;
+    if(autoRefreshEnabled){
+        window.setTimeout(function(){ window.location.reload(); },refreshSeconds*1000);
+    }
 })();
 </script>
 
@@ -2941,7 +2916,7 @@ Object.keys(polarData).forEach(function(id){
 </style>
 
 <div class="slim-public-admin-link">
-    <a href="../admin/">admin</a>
+    <a href="<?= $slimHealthDashboard ? '../' : '../admin/' ?>">admin</a>
 </div>
 
 </body>

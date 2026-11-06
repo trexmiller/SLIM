@@ -13,7 +13,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/bootstrap.php';
 require_once __DIR__ . '/admin_auth.php';
 
-// Four-hour rolling cookie/server lifetime; active Admin pages keep it alive.
+// Idle time is updated by real administrator requests, not keepalive pings.
 $slimAdminSessionLifetime = SLIM_ADMIN_IDLE_TIMEOUT;
 
 if (session_status() !== PHP_SESSION_ACTIVE) {
@@ -22,17 +22,17 @@ if (session_status() !== PHP_SESSION_ACTIVE) {
 
     $script   = (string)($_SERVER['SCRIPT_NAME'] ?? '/');
     $adminPos = strpos($script, '/admin/');
+    // Scope the administrator session to the SLIM application root rather
+    // than /admin/ so an authenticated administrator can preview an
+    // unpublished public dashboard without a bypass token.
     $cookiePath = $adminPos !== false
-        ? substr($script, 0, $adminPos) . '/admin/'
+        ? substr($script, 0, $adminPos) . '/'
         : '/';
 
-    session_name('SLIMADMINSESSID');
+    slim_configure_private_sessions();
+    session_name('SLIMADMINSESSID2');
 
-    $https = !empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off';
-
-    if (!$https && ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https') {
-        $https = true;
-    }
+    $https = slim_request_is_https();
 
     session_set_cookie_params([
         'lifetime' => $slimAdminSessionLifetime,
@@ -78,6 +78,15 @@ try {
     exit;
 }
 
+// Revocation check is performed on every authenticated request, including keepalive.
+// Deleted users, password changes and deleted/recreated usernames invalidate
+// all sessions; legacy sessions without fingerprints must sign in again.
+if (slim_admin_current_user() !== null && !slim_admin_session_authorized()) {
+    slim_admin_logout();
+    session_start();
+    $slimAdminNotice = 'Your administrator session was revoked. Please sign in again.';
+}
+
 // Expire stale sessions before anything else looks at them.
 if (slim_admin_current_user() !== null && slim_admin_session_expired()) {
     slim_admin_logout();
@@ -97,53 +106,72 @@ if ($slimAdminPost && isset($_POST['slim_admin_logout'])) {
     exit;
 }
 
-// --- First-run account creation -------------------------------------------
+// --- First-run ownership verification and account creation -----------------
 if (!$slimAdminHasAccounts) {
+    if (slim_config_inside_webroot()) {
+        if ($slimAdminIsApi) {
+            http_response_code(503);
+            header('Content-Type: application/json; charset=utf-8');
+            echo json_encode(['error'=>'Initial administrator setup requires private configuration outside the web root.']);
+            exit;
+        }
+        slim_admin_render_gate('first_run',
+            'Administrator creation is disabled until SLIM private configuration is stored outside the published web directory. Create the external directory, set its absolute path in config/EXTERNAL_CONFIG_PATH, and reload this page.',
+            $slimAdminNotice);
+        exit;
+    }
+
+    try { slim_admin_ensure_claim_code(); }
+    catch (Throwable $claimFileError) { $slimAdminError=$claimFileError->getMessage(); }
+
+    if ($slimAdminPost && isset($_POST['slim_admin_verify_claim'])) {
+        try {
+            if (!slim_admin_auth_token_valid()) throw new RuntimeException('Session validation failed. Reload the page and try again.');
+            if (!slim_admin_verify_claim_code((string)($_POST['setup_code'] ?? ''))) {
+                usleep(400000);
+                throw new RuntimeException('The one-time setup code is incorrect.');
+            }
+            header('Location: '.(string)($_SERVER['SCRIPT_NAME'] ?? './'),true,303);
+            exit;
+        } catch (Throwable $e) { $slimAdminError=$e->getMessage(); }
+    }
+
+    if (!slim_admin_claim_verified()) {
+        if ($slimAdminIsApi) {
+            http_response_code(401);
+            header('Content-Type: application/json; charset=utf-8');
+            echo json_encode(['error'=>'SLIM installation ownership has not yet been verified.']);
+            exit;
+        }
+        slim_admin_render_gate('claim',$slimAdminError,$slimAdminNotice);
+        exit;
+    }
+
     if ($slimAdminPost && isset($_POST['slim_admin_create_first'])) {
         try {
-            if (!slim_admin_auth_token_valid()) {
-                throw new RuntimeException('Session validation failed. Reload the page and try again.');
-            }
+            if (!slim_admin_auth_token_valid()) throw new RuntimeException('Session validation failed. Reload the page and try again.');
+            if (!slim_admin_claim_verified()) throw new RuntimeException('Installation ownership must be verified before creating an administrator.');
+            $newUser=(string)($_POST['username'] ?? '');
+            $newPass=(string)($_POST['password'] ?? '');
+            $confirm=(string)($_POST['password_confirm'] ?? '');
+            if (!hash_equals($newPass,$confirm)) throw new RuntimeException('The two passwords do not match.');
 
-            $newUser  = (string)($_POST['username'] ?? '');
-            $newPass  = (string)($_POST['password'] ?? '');
-            $confirm  = (string)($_POST['password_confirm'] ?? '');
-
-            if (!hash_equals($newPass, $confirm)) {
-                throw new RuntimeException('The two passwords do not match.');
-            }
-
-            // Fresh installations must place operational configuration outside
-            // the published web directory before an administrator can claim SLIM.
-            // Existing installations that historically used local config remain
-            // readable, but the insecure first-run bypass is intentionally removed.
-            if (slim_config_inside_webroot()) {
-                throw new RuntimeException(
-                    'Administrator creation is disabled until SLIM private configuration is '
-                    . 'stored outside the published web directory. Create the external directory, '
-                    . 'set its absolute path in config/EXTERNAL_CONFIG_PATH, and reload this page.'
-                );
-            }
-
-            slim_admin_create_user($newUser, $newPass);
-            slim_admin_attempt_login($newUser, $newPass);
-
-            header('Location: ' . (string)($_SERVER['SCRIPT_NAME'] ?? './'), true, 303);
+            slim_admin_create_user($newUser,$newPass);
+            slim_admin_remove_claim_code();
+            slim_admin_attempt_login($newUser,$newPass);
+            header('Location: '.(string)($_SERVER['SCRIPT_NAME'] ?? './'),true,303);
             exit;
-        } catch (Throwable $e) {
-            $slimAdminError = $e->getMessage();
-        }
+        } catch (Throwable $e) { $slimAdminError=$e->getMessage(); }
     }
 
     if (slim_admin_current_user() === null) {
         if ($slimAdminIsApi) {
             http_response_code(401);
             header('Content-Type: application/json; charset=utf-8');
-            echo json_encode(['error' => 'SLIM administrator account not yet created.']);
+            echo json_encode(['error'=>'SLIM administrator account not yet created.']);
             exit;
         }
-
-        slim_admin_render_gate('first_run', $slimAdminError, $slimAdminNotice);
+        slim_admin_render_gate('first_run',$slimAdminError,$slimAdminNotice);
         exit;
     }
 }
@@ -183,7 +211,9 @@ if (slim_admin_current_user() === null) {
 // Authenticated from here on
 // ---------------------------------------------------------------------------
 
-$_SESSION['_slim_admin_last_activity'] = time();
+if ($slimAdminScript !== 'keepalive.php') {
+    $_SESSION['_slim_admin_last_activity'] = time();
+}
 
 // Refresh the rolling cookie expiration as well.
 if (!headers_sent() && session_id() !== '') {

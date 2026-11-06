@@ -5,7 +5,11 @@ require_once dirname(__DIR__,2).'/lib/bootstrap.php';
 header('Content-Type: application/json; charset=utf-8');
 try {
     if($_SERVER['REQUEST_METHOD']!=='POST') throw new RuntimeException('POST required.');
-    if(!hash_equals($_SESSION['site_csrf'] ?? '',(string)($_POST['csrf'] ?? ''))) throw new RuntimeException('Session validation failed. Reload the page and try again.');
+    $expectedCsrf=(string)($_SESSION['site_csrf'] ?? '');
+    $providedCsrf=(string)($_POST['csrf'] ?? '');
+    if($expectedCsrf==='' || $providedCsrf==='' || !hash_equals($expectedCsrf,$providedCsrf)) {
+        throw new RuntimeException('Session validation failed. Reload the page and try again.');
+    }
     if(!isset($_FILES['image']) || !is_array($_FILES['image'])) throw new RuntimeException('No image was uploaded.');
     $f=$_FILES['image'];
     if(($f['error'] ?? UPLOAD_ERR_NO_FILE)!==UPLOAD_ERR_OK) throw new RuntimeException('Image upload failed.');

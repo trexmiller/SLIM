@@ -32,22 +32,7 @@ function station_extra_info(array $station): array {
 
 $error='';
 $rows=[];
-$dbName='';
-
-// Derive this SLIM installation's ingestion endpoint from the current request.
-// This remains correct when SLIM is installed in a subdirectory.
-$https=!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS'])!=='off';
-$scheme=$https?'https':'http';
-$host=(string)($_SERVER['HTTP_HOST'] ?? '');
-$script=(string)($_SERVER['SCRIPT_NAME'] ?? '');
-$adminPos=strpos($script,'/admin/');
-$basePath=$adminPos!==false ? substr($script,0,$adminPos) : '';
-$ingestionEndpoint=$host!=='' ? $scheme.'://'.$host.$basePath.'/ingest/' : $basePath.'/ingest/';
-
 try {
-    $dbConfig=lakestat_load_config('database.php');
-    $dbName=(string)($dbConfig['database'] ?? '');
-
     $stations=lakestat_list_stations();
     $pdo=lakestat_db();
 
@@ -56,11 +41,25 @@ try {
         $webhook=lakestat_webhook_config($station);
 
         $observationCount=null;
+        $observedMin=$observedMax=$receivedMin=$receivedMax=null;
         try {
             $table=lakestat_safe_identifier((string)($station['table'] ?? ''));
             if($table!=='') {
-                $countStmt=$pdo->query("SELECT COUNT(*) FROM `{$table}`");
-                $observationCount=(int)$countStmt->fetchColumn();
+                lakestat_optimize_station_table($pdo,$station);
+                $statsStmt=$pdo->query(
+                    "SELECT COUNT(*) AS observation_count,
+                            MIN(`observed_at`) AS observed_min,
+                            MAX(`observed_at`) AS observed_max,
+                            MIN(`received_at`) AS received_min,
+                            MAX(`received_at`) AS received_max
+                     FROM `{$table}`"
+                );
+                $stats=$statsStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+                $observationCount=(int)($stats['observation_count'] ?? 0);
+                $observedMin=$stats['observed_min'] ?? null;
+                $observedMax=$stats['observed_max'] ?? null;
+                $receivedMin=$stats['received_min'] ?? null;
+                $receivedMax=$stats['received_max'] ?? null;
             }
         } catch(Throwable $countError) {
             // Keep the directory usable if one station table is unavailable.
@@ -70,13 +69,16 @@ try {
         $rows[]=[
             'code'=>(string)$station['code'],
             'name'=>(string)($station['name'] ?? $code),
-            'database'=>$dbName,
             'table'=>(string)($station['table'] ?? ''),
             'latitude'=>$station['latitude'] ?? null,
             'longitude'=>$station['longitude'] ?? null,
-            'api_key'=>(string)($station['api_key'] ?? ''),
+            'api_key_status'=>!empty($station['api_key_hash']) ? 'Configured (hidden)' : 'Missing',
             'timestamp_field'=>(string)($station['timestamp_field'] ?? ''),
             'observation_count'=>$observationCount,
+            'observed_min'=>$observedMin,
+            'observed_max'=>$observedMax,
+            'received_min'=>$receivedMin,
+            'received_max'=>$receivedMax,
             'field_count'=>is_array($station['fields'] ?? null) ? count($station['fields']) : 0,
             'webhook_enabled'=>!empty($webhook['enabled']),
             'webhook_url'=>(string)($webhook['url'] ?? ''),
@@ -97,7 +99,7 @@ try {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SLIM Station Directory</title>
+<title>Station Directory</title>
 <style>
 body{font-family:Arial,sans-serif;background:#f5f6f7;margin:0;color:#222}
 .wrap{max-width:1500px;margin:35px auto;padding:0 20px}
@@ -105,7 +107,7 @@ body{font-family:Arial,sans-serif;background:#f5f6f7;margin:0;color:#222}
 .error{background:#fdeaea;border:1px solid #e4aaaa;padding:12px;margin-bottom:15px}
 .hint{color:#666;font-size:.92rem}
 .table-wrap{overflow-x:auto}
-table{width:100%;border-collapse:collapse;min-width:1350px}
+table{width:100%;border-collapse:collapse;min-width:1250px}
 th,td{padding:9px 10px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}
 th{background:#f8f8f8;white-space:nowrap}
 code{font-size:.88em}
@@ -126,10 +128,9 @@ code{font-size:.88em}
 <div class="card">
 <h1>Station Directory</h1>
 <p class="hint">
-Protected administrative inventory of all configured stations. API keys are
-shown here because this page is intended only for the password-protected Admin area.
-The ingestion endpoint, station code, and station-specific API key shown here are the
-three values needed by the Test Data Generator and by devices posting observations to SLIM.
+Protected administrative inventory of all configured stations. API keys are stored as one-way digests and cannot be retrieved.
+Station codes are shown here for device configuration.
+The observation-time and receipt-time ranges summarize the temporal coverage currently stored for each station.
 Custom descriptive metadata entered in Station Manager is shown under Additional information.
 </p>
 
@@ -145,13 +146,13 @@ Custom descriptive metadata entered in Station Manager is shown under Additional
 <tr>
 <th>Station name</th>
 <th>Code</th>
-<th>Database</th>
 <th>Table</th>
 <th>Coordinates</th>
-<th>Ingestion endpoint</th>
 <th>API key</th>
 <th>Timestamp source field</th>
 <th>Observations</th>
+<th>Observed-at range</th>
+<th>Received-at range</th>
 <th>Columns</th>
 <th>Webhook</th>
 <th>Additional information</th>
@@ -164,7 +165,6 @@ Custom descriptive metadata entered in Station Manager is shown under Additional
 <tr>
 <td><strong><?= h($row['name']) ?></strong></td>
 <td><code><?= h($row['code']) ?></code></td>
-<td><code><?= h($row['database']) ?></code></td>
 <td><code><?= h($row['table']) ?></code></td>
 
 <td class="coords">
@@ -176,8 +176,7 @@ Custom descriptive metadata entered in Station Manager is shown under Additional
 <?php endif; ?>
 </td>
 
-<td class="small"><code><?= h($ingestionEndpoint) ?></code></td>
-<td class="api-key"><?= h($row['api_key']) ?></td>
+<td class="api-key"><?= h($row['api_key_status']) ?></td>
 <td>
 <?php if($row['timestamp_field']!==''): ?>
 <code><?= h($row['timestamp_field']) ?></code>
@@ -191,6 +190,16 @@ Custom descriptive metadata entered in Station Manager is shown under Additional
 <?php else: ?>
 <span class="small">Unavailable</span>
 <?php endif; ?>
+</td>
+<td class="small">
+<?php if($row['observed_min'] && $row['observed_max']): ?>
+<?= h((string)$row['observed_min']) ?><br>to<br><?= h((string)$row['observed_max']) ?>
+<?php else: ?>—<?php endif; ?>
+</td>
+<td class="small">
+<?php if($row['received_min'] && $row['received_max']): ?>
+<?= h((string)$row['received_min']) ?><br>to<br><?= h((string)$row['received_max']) ?>
+<?php else: ?>—<?php endif; ?>
 </td>
 <td><?= (int)$row['field_count'] ?></td>
 
@@ -220,6 +229,8 @@ Custom descriptive metadata entered in Station Manager is shown under Additional
 
 <td class="actions">
 <a href="../station/?station=<?= urlencode($row['code']) ?>">Manage</a>
+&nbsp;·&nbsp;
+<a href="api.php?station=<?= urlencode($row['code']) ?>">API Setup</a>
 &nbsp;·&nbsp;
 <a href="../table/?station=<?= urlencode($row['code']) ?>">View Data</a>
 &nbsp;·&nbsp;

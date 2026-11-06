@@ -25,7 +25,7 @@ if (slim_htaccess_likely_ignored()) {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SLIM Administration</title>
+<title>Administration</title>
 <style>
 body{font-family:Arial,sans-serif;background:#f5f6f7;margin:0;color:#222}
 .wrap{max-width:900px;margin:45px auto;padding:0 20px}
@@ -40,31 +40,30 @@ h1{margin-top:0}.note{color:#666}
 <body>
 <?= slim_admin_session_bar() ?>
 <div class="wrap"><div class="card">
-<h1>SLIM Administration</h1>
-<p class="note">Administrative access is authenticated by SLIM. You may additionally
-protect this directory with your hosting provider's Directory Privacy tool.</p>
+<h1>Administration</h1>
 <?php foreach ($deployWarnings as $warning): ?>
 <div class="warn"><?= $warning ?></div>
 <?php endforeach; ?>
 <div class="grid">
-<a class="tile" href="setup/"><strong>SLIM Setup</strong><br><small>Database connection and system defaults</small></a>
+<a class="tile" href="setup/"><strong>Setup</strong><br><small>Database connection and system defaults</small></a>
 <a class="tile" href="station/"><strong>Station Management</strong><br><small>Create, configure, and manage stations</small></a>
-<a class="tile" href="dashboard/"><strong>Dashboard Configuration</strong><br><small>Add, remove, and reorder displays</small></a>
+<a class="tile" href="dashboard/"><strong>Dashboard Creator</strong><br><small>Add, remove, and reorder displays</small></a>
 <a class="tile" href="health/setup.php"><strong>Station Health Dashboards</strong><br><small>Build private engineering and station diagnostic displays</small></a>
 <a class="tile" href="test_data/"><strong>Test Data Generator</strong><br><small>Send synthetic observations</small></a>
 <a class="tile" href="appearance/"><strong>Appearance & Branding</strong><br><small>Theme, colors, and logo</small></a>
 <a class="tile" href="site/"><strong>Public Site Configuration</strong><br><small>Home page text, links, station map, and station list</small></a>
-<a class="tile" href="webhook/"><strong>Webhook Deliveries</strong><br><small>Review queued, delivered, and failed outbound webhooks</small></a>
+<a class="tile" href="webhook/"><strong>Webhook Deliveries</strong><br><small>Review outbound webhook delivery history</small></a>
 <a class="tile" href="export/"><strong>Data Export / Backup</strong><br><small>Download protected CSV or multi-station ZIP backups</small></a>
 <a class="tile" href="import/"><strong>CSV Import</strong><br><small>Add historical data or create a new station from CSV</small></a>
 
 
 <a class="tile" href="account/"><strong>Administrator Accounts</strong><br><small>Change your password and manage admin logins</small></a>
 
-<a class="tile" href="../"><strong>SLIM Home Page</strong><br><small>Return to the main public site</small></a>
+<a class="tile" href="stations/"><strong>Station Directory</strong><br><small>View names, database details, coordinates, API keys, and station metadata</small></a>
 
 </div>
-</div><a class="tile" href="stations/"><strong>Station Directory</strong><br><small>View names, database details, coordinates, API keys, and station metadata</small></a>
+</div>
+<p style="margin:16px 0 0;text-align:center"><a href="../">Return to Home Page</a></p>
 </div>
 </body>
 </html>

@@ -35,7 +35,7 @@ $orgName=trim((string)($appearance['organization_name'] ?? ($site['organization_
 </div>
 <?php endif; ?>
 <nav><a href="../">Home</a><?php if(!empty($site['show_about_page'])): ?> <a href="../about/"><?= h($site['about_nav_label'] ?: 'About') ?></a><?php endif; ?><?php if(!empty($site['show_contact_page'])): ?> <a href="../contact/"><?= h($site['contact_nav_label'] ?: 'Contact') ?></a><?php endif; ?></nav>
-<main id="main-content" class="card" tabindex="-1"><h1><?= h((string)$site['about_title']) ?></h1><div class="text rich"><?= $site['about_html']!=='' ? slim_sanitize_content_html((string)$site['about_html']) : nl2br(h((string)$site['about_text'])) ?></div><?php if($site['website_url']!==''): ?><p><a href="<?= h($site['website_url']) ?>" target="_blank" rel="noopener"><?= h($site['website_label'] ?: 'Organization website') ?></a></p><?php endif; ?></main>
+<main id="main-content" class="card" tabindex="-1"><h1><?= h((string)$site['about_title']) ?></h1><div class="text rich"><?= $site['about_html']!=='' ? slim_sanitize_content_html((string)$site['about_html']) : nl2br(h((string)$site['about_text'])) ?></div><?php if(slim_is_http_url((string)($site['website_url'] ?? ''))): ?><p><a href="<?= h($site['website_url']) ?>" target="_blank" rel="noopener"><?= h($site['website_label'] ?: 'Organization website') ?></a></p><?php endif; ?></main>
 <p class="slim-version-footer"><?= h(slim_footer_text()) ?></p>
 </div>
 

@@ -93,7 +93,7 @@ $minLength = SLIM_ADMIN_MIN_PASSWORD;
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow">
-<title>SLIM Administrator Accounts</title>
+<title>Administrator Accounts</title>
 <style>
 body{font-family:Arial,Helvetica,sans-serif;background:#f5f6f7;margin:0;color:#222}
 .wrap{max-width:900px;margin:25px auto;padding:0 20px}
@@ -122,7 +122,7 @@ th,td{padding:9px;border-bottom:1px solid #ddd;text-align:left}
 <div class="card">
 <h1>Administrator Accounts</h1>
 <p class="hint">
-SLIM authenticates administrators against bcrypt password hashes stored in the
+The system authenticates administrators against bcrypt password hashes stored in the
 configuration directory. Web-server access control such as cPanel Directory
 Privacy may be layered on top of this but is no longer required for basic
 protection.

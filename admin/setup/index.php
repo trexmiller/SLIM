@@ -20,6 +20,7 @@ try {
    $probe='lakestat_setup_probe_'.bin2hex(random_bytes(4));
    $pdo->exec("CREATE TABLE `{$probe}` (`id` INT NOT NULL AUTO_INCREMENT PRIMARY KEY, `value` VARCHAR(20)) ENGINE=InnoDB");
    $pdo->exec("INSERT INTO `{$probe}` (`value`) VALUES ('ok')"); $pdo->query("SELECT * FROM `{$probe}`")->fetch(); $pdo->exec("DROP TABLE `{$probe}`");
+   lakestat_webhook_ensure_table($pdo);
    lakestat_write_php_config(lakestat_config_path('database.php'),$db); $dbConfigured=true; $message='Database connection saved successfully.';
   }
   if($action==='update_database') {
@@ -28,11 +29,23 @@ try {
    if($db['host']==='' || $db['database']==='' || $db['username']==='') throw new RuntimeException('Host, database name, and username are required.');
    $dsn=sprintf('mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4',$db['host'],$db['port'],$db['database']);
    $pdo=new PDO($dsn,$db['username'],$db['password'],[PDO::ATTR_ERRMODE=>PDO::ERRMODE_EXCEPTION,PDO::ATTR_EMULATE_PREPARES=>false]); $pdo->query('SELECT 1')->fetchColumn();
+   lakestat_webhook_ensure_table($pdo);
    lakestat_write_php_config(lakestat_config_path('database.php'),$db); $dbConfigured=true; $message='Database connection tested and updated successfully.';
   }
   if($action==='save_system') {
    $existingSystem=slim_system_config();
-   $system=['dashboard_name'=>(string)($existingSystem['dashboard_name'] ?? 'Environmental Monitoring Dashboard'),'organization'=>(string)($existingSystem['organization'] ?? ''),'timezone'=>slim_valid_timezone((string)($_POST['timezone'] ?? 'America/Chicago')),'refresh_seconds'=>max(15,(int)($_POST['refresh_seconds'] ?? 120)),'graph_hours'=>max(1,(int)($_POST['graph_hours'] ?? 72)),'max_plot_days'=>max(1,min(3650,(int)($_POST['max_plot_days'] ?? 3650))),'require_https'=>isset($_POST['require_https']),'allow_get'=>isset($_POST['allow_get']),'allow_form_post'=>isset($_POST['allow_form_post']),'allow_json_post'=>true];
+   $trustedProxyText=trim((string)($_POST['trusted_proxies'] ?? ''));
+    $trustedProxies=preg_split('/[\s,]+/',$trustedProxyText,-1,PREG_SPLIT_NO_EMPTY) ?: [];
+    foreach($trustedProxies as $proxyRange) {
+     $parts=explode('/',(string)$proxyRange,2); $proxyIp=$parts[0];
+     if(filter_var($proxyIp,FILTER_VALIDATE_IP)===false) throw new RuntimeException('Trusted proxies must contain only valid IP addresses or CIDR ranges.');
+     if(isset($parts[1])) {
+      if(!ctype_digit($parts[1])) throw new RuntimeException('Trusted proxy CIDR prefixes must be numeric.');
+      $maxBits=strpos($proxyIp,':')!==false?128:32;
+      if((int)$parts[1]<0 || (int)$parts[1]>$maxBits) throw new RuntimeException('Trusted proxy CIDR prefix is outside the valid range.');
+     }
+    }
+    $system=['dashboard_name'=>(string)($existingSystem['dashboard_name'] ?? 'Environmental Monitoring Dashboard'),'organization'=>(string)($existingSystem['organization'] ?? ''),'timezone'=>slim_valid_timezone((string)($_POST['timezone'] ?? 'America/Chicago')),'refresh_seconds'=>max(15,(int)($_POST['refresh_seconds'] ?? 600)),'auto_refresh_enabled'=>isset($_POST['auto_refresh_enabled']),'graph_hours'=>max(1,(int)($_POST['graph_hours'] ?? 72)),'max_plot_days'=>max(1,min(3650,(int)($_POST['max_plot_days'] ?? 3650))),'require_https'=>isset($_POST['require_https']),'allow_get'=>isset($_POST['allow_get']),'allow_form_post'=>isset($_POST['allow_form_post']),'allow_json_post'=>true,'trusted_proxies'=>array_values($trustedProxies)];
    lakestat_write_php_config(lakestat_config_path('system.php'),$system); $systemConfigured=true; $message='System defaults saved successfully.';
   }
  }
@@ -40,14 +53,14 @@ try {
 $currentDbConfig=$dbConfigured?lakestat_load_config('database.php'):[];
 $systemConfig=$systemConfigured?slim_system_config():[];
 ?>
-<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SLIM Setup</title><style>
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Setup</title><style>
 body{font-family:Arial,sans-serif;background:#f5f6f7;margin:0;color:#222}
 .wrap{max-width:1050px;margin:35px auto;padding:0 20px}
 .card{background:#fff;border:1px solid #ddd;border-radius:8px;padding:24px;margin-bottom:20px}
 h1,h2{margin-top:0}
 label{display:block;margin:10px 0 5px;font-weight:600}
 input,select{padding:8px;border:1px solid #bbb;border-radius:4px;box-sizing:border-box}
-input[type=text],input[type=password],input[type=number],input[type=url]{width:100%;max-width:520px}
+input[type=text],input[type=password],input[type=number],input[type=url],textarea{width:100%;max-width:520px}
 .inline{display:flex;gap:12px;flex-wrap:wrap}.inline>div{flex:1;min-width:180px}
 button{padding:9px 15px;border:0;border-radius:5px;cursor:pointer}
 .primary{background:#222;color:#fff}.secondary{background:#e7e7e7}
@@ -112,8 +125,11 @@ setting this, your host is one of them; use the pointer file instead.</li>
 <?php if($dbConfigured): ?>
 <div class="card"><h2>System Defaults</h2><form method="post"><input type="hidden" name="csrf" value="<?= h($_SESSION['csrf']) ?>"><input type="hidden" name="action" value="save_system">
 <?php $currentTimezone=(string)($systemConfig['timezone'] ?? 'America/Chicago'); ?>
-<label>Time zone <?= slim_help_button('Time zone','Controls how public dashboard timestamps and the live clock are displayed.') ?></label><select name="timezone" required><?php foreach(slim_timezone_identifiers() as $timezone): ?><option value="<?= h($timezone) ?>" <?= $timezone===$currentTimezone?'selected':'' ?>><?= h($timezone) ?></option><?php endforeach; ?></select>
-<div class="inline"><div><label>Refresh interval (seconds)</label><input type="number" name="refresh_seconds" value="<?= (int)($systemConfig['refresh_seconds'] ?? 120) ?>" min="15"></div><div><label>Default graph period (hours)</label><input type="number" name="graph_hours" value="<?= (int)($systemConfig['graph_hours'] ?? 72) ?>" min="1"></div><div><label>Maximum health-dashboard time-series range (days) <?= slim_help_button('Maximum selectable time-series range','Maximum number of calendar days an administrator may request on a private health dashboard. Health plots are full resolution and are not downsampled, so very large ranges can take substantial time and server/browser resources.') ?></label><input type="number" name="max_plot_days" value="<?= (int)($systemConfig['max_plot_days'] ?? 3650) ?>" min="1" max="3650"><p class="hint">Default 3650 days. Health dashboards return all observations without downsampling; large high-frequency ranges may load slowly.</p></div></div>
+<label>System time zone (monitoring program headquarters) <?= slim_help_button('System time zone','Organizational reference timezone for system-wide administration and the default for stations without their own timezone. Station dashboards use the timezone configured for each station. Never determined by the administrator browser or computer.') ?></label><select name="timezone" required><?php foreach(slim_timezone_identifiers() as $timezone): ?><option value="<?= h($timezone) ?>" <?= $timezone===$currentTimezone?'selected':'' ?>><?= h($timezone) ?></option><?php endforeach; ?></select>
+<div class="inline"><div><label>Dashboard auto-refresh</label><label style="font-weight:400"><input type="checkbox" name="auto_refresh_enabled" <?= ($systemConfig['auto_refresh_enabled'] ?? true)?'checked':'' ?>> Enable automatic dashboard reload</label><p class="hint">Reloads the current dashboard URL so the selected dashboard and query options are preserved.</p></div><div><label>Refresh interval (seconds)</label><input type="number" name="refresh_seconds" value="<?= (int)($systemConfig['refresh_seconds'] ?? 600) ?>" min="15"><p class="hint">Default 600 seconds (10 minutes).</p></div><div><label>Default graph period (hours)</label><input type="number" name="graph_hours" value="<?= (int)($systemConfig['graph_hours'] ?? 72) ?>" min="1"></div><div><label>Maximum health-dashboard time-series range (days) <?= slim_help_button('Maximum selectable time-series range','Maximum number of calendar days an administrator may request on a private health dashboard. Health plots are full resolution and are not downsampled, so very large ranges can take substantial time and server/browser resources.') ?></label><input type="number" name="max_plot_days" value="<?= (int)($systemConfig['max_plot_days'] ?? 3650) ?>" min="1" max="3650"><p class="hint">Default 3650 days. Health dashboards return all observations without downsampling; large high-frequency ranges may load slowly.</p></div></div>
+<label>Trusted proxies / load balancers <?= slim_help_button('Trusted proxies','Optional. Enter only IP addresses or CIDR ranges of reverse proxies, CDNs, or load balancers that connect directly to SLIM and set X-Forwarded-For. When REMOTE_ADDR matches one of these trusted ranges, SLIM uses the forwarding chain to identify the real client for login and request rate limiting. Never enter broad public networks unless every address in that range is under your control.') ?></label>
+<textarea name="trusted_proxies" rows="4" placeholder="Example: 192.0.2.10&#10;2001:db8:1234::/48"><?= h(implode("\n",(array)($systemConfig['trusted_proxies'] ?? []))) ?></textarea>
+<p class="hint">Leave blank when SLIM is reached directly. Accepts one IP address or CIDR range per line (commas also accepted). SLIM ignores <code>X-Forwarded-For</code> unless <code>REMOTE_ADDR</code> is trusted.</p>
 <label><input type="checkbox" name="allow_form_post" <?= !array_key_exists('allow_form_post',$systemConfig)||!empty($systemConfig['allow_form_post'])?'checked':'' ?>> Allow form POST</label>
 <label><input type="checkbox" name="allow_get" <?= !empty($systemConfig['allow_get'])?'checked':'' ?>> Allow GET compatibility mode</label>
 <label><input type="checkbox" name="require_https" <?= !array_key_exists('require_https',$systemConfig)||!empty($systemConfig['require_https'])?'checked':'' ?>> Require HTTPS</label>

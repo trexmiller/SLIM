@@ -50,7 +50,7 @@ try {
         }
 
         $websiteUrl=trim((string)($_POST['website_url'] ?? ''));
-        if ($websiteUrl !== '' && filter_var($websiteUrl,FILTER_VALIDATE_URL) === false) {
+        if ($websiteUrl !== '' && !slim_is_http_url($websiteUrl)) {
             throw new RuntimeException('Organization website must be a complete URL such as https://example.org.');
         }
 
@@ -59,7 +59,7 @@ try {
         if ($contactEmail !== '' && filter_var($contactEmail,FILTER_VALIDATE_EMAIL) === false) {
             throw new RuntimeException('Contact email address is not valid.');
         }
-        if ($contactWebsite !== '' && filter_var($contactWebsite,FILTER_VALIDATE_URL) === false) {
+        if ($contactWebsite !== '' && !slim_is_http_url($contactWebsite)) {
             throw new RuntimeException('Contact website must be a complete URL such as https://example.org.');
         }
 
@@ -120,7 +120,7 @@ try {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SLIM Site Configuration</title>
+<title>Site Configuration</title>
 <style>
 body{font-family:Arial,sans-serif;background:#f5f6f7;margin:0;color:#222}
 .wrap{max-width:1000px;margin:35px auto;padding:0 20px}
@@ -412,7 +412,7 @@ to the password-protected Admin import tool.
 </div>
 <script>
 (function(){
- const csrf=<?= json_encode($_SESSION['site_csrf']) ?>;
+ const csrf=<?= json_encode($_SESSION['site_csrf'],JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?>;
  document.querySelectorAll('.editor-toolbar').forEach(toolbar=>{
    const id=toolbar.dataset.editor, editor=document.getElementById(id), file=document.getElementById(id+'_file');
    toolbar.addEventListener('mousedown',e=>{ if(!e.target.closest('select')) e.preventDefault(); });
