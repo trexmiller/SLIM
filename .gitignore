@@ -1,1 +1,21 @@
+# macOS
 .DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# PHP & Composer
+/vendor/
+composer.phar
+*.log
+
+# Environment & Local Configs
+.env
+.env.*
+!.env.example
+
+# IDEs & Editors
+.vscode/
+.idea/
+*.swp
+*~
