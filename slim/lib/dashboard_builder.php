@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/page_frame.php';
+require_once __DIR__ . '/dashboard_backups.php';
 // Shared dashboard editor for public and health dashboards.
 $slimDashboardMode = ($slimDashboardMode ?? 'public') === 'health' ? 'health' : 'public';
 $slimHealthDashboard = $slimDashboardMode === 'health';
@@ -12,6 +13,12 @@ $slimDashboardViewBase = $slimHealthDashboard ? './?station=' : '../../dashboard
 
 if (empty($_SESSION['dashboard_csrf'])) {
     $_SESSION['dashboard_csrf'] = bin2hex(random_bytes(24));
+}
+
+function slim_dashboard_save(string $code,string $kind,array $config): void {
+    lakestat_write_php_config(lakestat_display_config_path($code,$kind),$config);
+    try { slim_dashboard_backup_save($code,$kind,$config); }
+    catch(Throwable $e) { error_log('SLIM dashboard backup failed: '.$e->getMessage()); $_SESSION['dashboard_backup_warning']='Dashboard saved, but automatic JSON backup failed. Check private directory permissions.'; }
 }
 
 function h(string $value): string {
@@ -199,11 +206,16 @@ try {
                 'width'=>'full'
             ];
 
-            lakestat_write_php_config(
-                lakestat_display_config_path($selectedCode,$slimDashboardKind),
-                $displayConfig
-            );
+            slim_dashboard_save($selectedCode,$slimDashboardKind,$displayConfig);
         }
+    }
+
+    if($station && ($_GET['export_dashboard']??'')==='1') {
+        $json=json_encode(['format'=>'slim-dashboard','format_version'=>1,'kind'=>$slimDashboardKind,'station'=>$selectedCode,'saved_at'=>gmdate('c'),'configuration'=>$displayConfig],JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES|JSON_THROW_ON_ERROR);
+        header('Content-Type: application/json');
+        header('Content-Disposition: attachment; filename="slim_'.$slimDashboardKind.'_'. $selectedCode.'_dashboard.json"');
+        header('X-Content-Type-Options: nosniff');
+        echo $json;exit;
     }
 
     if ($_SERVER['REQUEST_METHOD']==='POST') {
@@ -219,10 +231,34 @@ try {
                 'show_last_received'=>isset($_POST['show_last_received']),
                 'show_local_time'=>isset($_POST['show_local_time'])
             ];
-            lakestat_write_php_config(lakestat_display_config_path($selectedCode,$slimDashboardKind),$displayConfig);
+            slim_dashboard_save($selectedCode,$slimDashboardKind,$displayConfig);
             $_SESSION[$slimDashboardFlashKey]='Dashboard information settings saved.';
             header('Location: ?station=' . urlencode($selectedCode));
             exit;
+        }
+
+        if($action==='import_dashboard' || $action==='restore_dashboard') {
+            if($action==='import_dashboard') {
+                $file=$_FILES['dashboard_json'] ?? null;
+                if(!is_array($file) || ($file['error']??1)!==UPLOAD_ERR_OK || ($file['size']??0)>1048576 || !is_uploaded_file((string)($file['tmp_name']??''))) throw new RuntimeException('Upload a valid dashboard JSON file (maximum 1 MB).');
+                $raw=file_get_contents($file['tmp_name']);
+            } else {
+                $version=(string)($_POST['backup_version']??'current');
+                $path=slim_dashboard_backup_path($selectedCode,$slimDashboardKind,$version);
+                if(!is_file($path)) throw new RuntimeException('The selected saved dashboard version is unavailable.');
+                $raw=file_get_contents($path);
+            }
+            if(!is_string($raw)) throw new RuntimeException('Cannot read dashboard configuration.');
+            $restored=slim_dashboard_backup_parse($raw,$slimDashboardKind);
+            $restored['station']=$selectedCode;
+            foreach($restored['displays'] as &$entry) {
+                if(!is_array($entry) || !is_string($entry['type']??null) || !is_string($entry['id']??null)) throw new RuntimeException('Invalid display in backup.');
+                if(($entry['type']??'')==='image') $entry['image_path']='';
+            }
+            unset($entry);
+            slim_dashboard_save($selectedCode,$slimDashboardKind,$restored);
+            $_SESSION[$slimDashboardFlashKey]='Dashboard configuration restored. Review field references and images.';
+            header('Location: ?station='.rawurlencode($selectedCode));exit;
         }
 
         if ($action==='copy_dashboard') {
@@ -254,10 +290,7 @@ try {
             }
             unset($copiedDisplay);
 
-            lakestat_write_php_config(
-                lakestat_display_config_path($selectedCode,$slimDashboardKind),
-                $copiedConfig
-            );
+            slim_dashboard_save($selectedCode,$slimDashboardKind,$copiedConfig);
 
             $_SESSION[$slimDashboardFlashKey]=
                 'Copied the '.$slimDashboardDescription.' configuration from '.$sourceCode.
@@ -549,10 +582,7 @@ try {
                 $_SESSION[$slimDashboardFlashKey]='Display added successfully.';
             }
 
-            lakestat_write_php_config(
-                lakestat_display_config_path($selectedCode,$slimDashboardKind),
-                $displayConfig
-            );
+            slim_dashboard_save($selectedCode,$slimDashboardKind,$displayConfig);
 
             header('Location: ?station=' . urlencode($selectedCode));
             exit;
@@ -571,10 +601,7 @@ try {
 
             $displayConfig['displays']=$new;
 
-            lakestat_write_php_config(
-                lakestat_display_config_path($selectedCode,$slimDashboardKind),
-                $displayConfig
-            );
+            slim_dashboard_save($selectedCode,$slimDashboardKind,$displayConfig);
 
             $message='Display deleted.';
         }
@@ -589,21 +616,18 @@ try {
             }
 
             if($index!==null) {
-                $target=$direction==='up' ? $index-1 : $index+1;
+                $target=$direction==='position' ? (int)($_POST['target_position']??0)-1 : ($direction==='up' ? $index-1 : $index+1);
 
                 if($target>=0 && $target<count($displayConfig['displays'])) {
                     $tmp=$displayConfig['displays'][$index];
-                    $displayConfig['displays'][$index]=$displayConfig['displays'][$target];
-                    $displayConfig['displays'][$target]=$tmp;
+                    if($direction==='position') { array_splice($displayConfig['displays'],$index,1); array_splice($displayConfig['displays'],$target,0,[$tmp]); }
+                    else { $displayConfig['displays'][$index]=$displayConfig['displays'][$target]; $displayConfig['displays'][$target]=$tmp; }
                 }
 
                 foreach($displayConfig['displays'] as $i=>&$display)$display['order']=$i+1;
                 unset($display);
 
-                lakestat_write_php_config(
-                    lakestat_display_config_path($selectedCode,$slimDashboardKind),
-                    $displayConfig
-                );
+                slim_dashboard_save($selectedCode,$slimDashboardKind,$displayConfig);
 
                 $message='Display order updated.';
             }
@@ -704,6 +728,28 @@ $showLocalTime=!array_key_exists('show_local_time',$headerInfo) || !empty($heade
 </div>
 <?php endif; ?>
 
+<?php if($station): ?>
+<div class="card">
+<h2>Dashboard Configuration Backup</h2>
+<p class="hint">SLIM automatically keeps the current and previous saved JSON versions in the private configuration directory. Export a portable copy or restore a saved version here. Restoring replaces the active dashboard.</p>
+<p><a class="button secondary" href="?station=<?= urlencode($selectedCode) ?>&amp;export_dashboard=1">Export Dashboard JSON</a></p>
+<form method="post" onsubmit="return confirm('Replace the current dashboard with this saved version?');">
+<input type="hidden" name="csrf" value="<?= h($_SESSION['dashboard_csrf']) ?>">
+<input type="hidden" name="station" value="<?= h($selectedCode) ?>">
+<input type="hidden" name="action" value="restore_dashboard">
+<label>Saved version</label><select name="backup_version"><option value="current">Current</option><option value="previous">Previous</option></select>
+<p><button class="secondary" type="submit">Restore Saved Dashboard</button></p>
+</form>
+<form method="post" enctype="multipart/form-data" onsubmit="return confirm('Replace the current dashboard with the uploaded JSON configuration?');">
+<input type="hidden" name="csrf" value="<?= h($_SESSION['dashboard_csrf']) ?>">
+<input type="hidden" name="station" value="<?= h($selectedCode) ?>">
+<input type="hidden" name="action" value="import_dashboard">
+<label>Import Dashboard JSON</label><input type="file" name="dashboard_json" accept=".json,application/json" required>
+<p><button class="secondary" type="submit">Import Dashboard</button></p>
+</form>
+</div>
+<?php endif; ?>
+
 <?php if($station && count($stations)>1): ?>
 <div class="card">
 <h2>Copy Dashboard Configuration</h2>
@@ -768,6 +814,19 @@ elseif($displayTypeLabel==='custom_text')$displayTypeLabel='Custom Text';
 <input type="hidden" name="display_id" value="<?= h($display['id'] ?? '') ?>">
 <input type="hidden" name="direction" value="down">
 <button class="secondary" type="submit">↓</button>
+</form>
+
+<form method="post" style="display:inline-flex;align-items:center;gap:5px;">
+<input type="hidden" name="csrf" value="<?= h($_SESSION['dashboard_csrf']) ?>">
+<input type="hidden" name="station" value="<?= h($selectedCode) ?>">
+<input type="hidden" name="action" value="move_display">
+<input type="hidden" name="display_id" value="<?= h($display['id'] ?? '') ?>">
+<input type="hidden" name="direction" value="position">
+<label>Position <select name="target_position" style="width:auto;" aria-label="Move display to position">
+<?php for($pos=1;$pos<=count($displayConfig['displays']);$pos++): ?>
+<option value="<?= $pos ?>" <?= $pos===(int)($display['order']??0)?'selected':'' ?>><?= $pos ?></option>
+<?php endfor; ?>
+</select></label><button class="secondary" type="submit">Move</button>
 </form>
 
 <form method="get">

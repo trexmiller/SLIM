@@ -281,7 +281,9 @@ try {
                 ];
             }
 
-            if (!$fields) throw new RuntimeException('Add at least one measurement field.');
+            $autoDiscover=($_POST['field_setup_mode'] ?? 'auto')==='auto';
+            if (!$autoDiscover && !$fields) throw new RuntimeException('Add at least one measurement field.');
+            if ($autoDiscover) $fields=[];
 
             $station = [
                 'code' => $code,
@@ -294,7 +296,9 @@ try {
                 // Stations remain hidden from the public home-page directory
                 // until an administrator explicitly publishes them.
                 'published' => false,
-                'fields' => $fields
+                'allow_legacy_http' => false,
+                'fields' => $fields,
+                'auto_discover' => $autoDiscover
             ];
 
             $columns = [
@@ -342,6 +346,7 @@ try {
             $station['name']=$newName;
             $station['timezone']=slim_valid_timezone((string)($_POST['station_timezone_edit'] ?? ($station['timezone'] ?? (slim_system_config()['timezone'] ?? 'UTC'))));
             $station['published']=isset($_POST['published']);
+            $station['allow_legacy_http']=isset($_POST['allow_legacy_http']);
 
             if($timestampField==='') {
                 unset($station['timestamp_field']);
@@ -1374,6 +1379,13 @@ pre{padding:12px;overflow:auto}
 <select name="station_timezone" required><?php $newStationTimezone=create_draft_value($createDraft,'station_timezone',(string)(slim_system_config()['timezone'] ?? 'UTC')); foreach(slim_timezone_identifiers() as $tz): ?><option value="<?= h($tz) ?>" <?= $tz===$newStationTimezone?'selected':'' ?>><?= h($tz) ?></option><?php endforeach; ?></select>
 <p class="hint">Defaults to the system timezone; choose the station location (for example, Asia/Bangkok).</p>
 
+<label>Measurement field setup</label>
+<select name="field_setup_mode" id="fieldSetupMode" onchange="document.getElementById('manualFieldsBlock').hidden=this.value==='auto'">
+<option value="auto" <?= create_draft_value($createDraft,'field_setup_mode','auto')==='auto'?'selected':'' ?>>Automatically detect fields from first authenticated observation (recommended)</option>
+<option value="manual" <?= create_draft_value($createDraft,'field_setup_mode','auto')==='manual'?'selected':'' ?>>Configure fields manually</option>
+</select>
+<p class="hint">Automatic discovery creates database columns from the first valid payload. Field names are preserved exactly; configure labels and units later.</p>
+<div id="manualFieldsBlock" <?= create_draft_value($createDraft,'field_setup_mode','auto')==='auto'?'hidden':'' ?>>
 <table id="createFields">
 <thead><tr><th>Incoming field</th><th>Display label</th><th>Units</th><th>Type</th><th></th></tr></thead>
 <tbody>
@@ -1398,6 +1410,7 @@ $draftType=(string)($draftTypes[$i] ?? 'number');
 </table>
 
 <p><button class="secondary" type="button" onclick="addRow('#createFields')">+ Add Measurement</button></p>
+</div>
 <p><button class="primary" type="submit">Create Station & Table</button></p>
 </form>
 </div>
@@ -1644,6 +1657,14 @@ Publish station <?= slim_help_button('Publish station','When enabled, this stati
     ? 'Published — this station can appear on the public home-page map and station list.'
     : 'Unpublished — this station is hidden from the public home-page map and station list while you configure and test it.' ?>
 </p>
+</div>
+
+<div class="publish-control">
+<label style="display:flex;align-items:center;gap:10px;font-weight:600;">
+<input type="checkbox" name="allow_legacy_http" value="1" style="width:auto;" <?= !empty($selectedStation['allow_legacy_http'])?'checked':'' ?>>
+Allow legacy HTTP ingestion (insecure)
+</label>
+<p class="hint" style="color:#8f1d14">Only enable for a station whose logger cannot use HTTPS. Its API key and observations are sent without encryption and can be intercepted or replayed. This exception applies only to the ingestion endpoint and only after station API-key authentication. HTTPS remains available for this station. Use a dedicated station key and replace it if exposed.</p>
 </div>
 
 <p><button class="primary" type="submit">Save Station Details</button></p>
@@ -2221,6 +2242,7 @@ Uncheck only if you intentionally want the derived variable to begin with new ob
     if(!form) return;
     form.addEventListener('submit',function(event){
         const message=document.getElementById('createStationValidation');
+        if(form.querySelector('[name=field_setup_mode]').value==='auto') return;
         const seen=new Set();
         let issue='';
         form.querySelectorAll('[name="field_key[]"]').forEach(function(input){

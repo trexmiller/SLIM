@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require_once dirname(__DIR__) . '/lib/bootstrap.php';
+require_once dirname(__DIR__) . '/lib/auto_discovery.php';
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -26,13 +27,11 @@ try {
     // behind the same public IP. Valid station traffic must not be blocked
     // by another device's authentication failures or traffic volume.
 
-    if (($system['require_https'] ?? true)) {
-        $https = slim_request_is_https();
-
-        if (!$https) {
-            reply_json(400, ['ok'=>false,'error'=>'HTTPS is required.']);
-        }
-    }
+    // HTTPS remains mandatory unless an authenticated station has explicitly
+    // opted in to legacy HTTP ingestion. Do not trust an unauthenticated
+    // station code as authorization to bypass HTTPS.
+    $https = slim_request_is_https();
+    $requiresHttps = (bool)($system['require_https'] ?? true);
 
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $contentType = strtolower(trim(explode(';', $_SERVER['CONTENT_TYPE'] ?? '')[0]));
@@ -69,6 +68,13 @@ try {
     }
     $apiKey = $_SERVER['HTTP_X_API_KEY'] ?? '';
     $authenticated = slim_api_key_matches($station ?? [], is_string($apiKey) ? $apiKey : '');
+    // For HTTP requests, return the same HTTPS-required response for unknown,
+    // unauthenticated, and non-exempt stations; avoid revealing station status.
+    // The global require_https=false setting retains its prior behavior.
+    if ($requiresHttps && !$https &&
+        (!$authenticated || $station === null || empty($station['allow_legacy_http']))) {
+        reply_json(400, ['ok'=>false,'error'=>'HTTPS is required.']);
+    }
     if ($station === null || !$authenticated) {
         reply_json(401, ['ok'=>false,'error'=>'Invalid API key.']);
     }
@@ -132,6 +138,11 @@ try {
         } catch (Throwable $timestampError) {
             reply_json(422,['ok'=>false,'error'=>'Invalid station timestamp: '.$timestampError->getMessage()]);
         }
+    }
+
+    if(!empty($station['auto_discover']) && empty($station['fields'])) {
+        try { $station=slim_initialize_station_fields($station,$data); }
+        catch(InvalidArgumentException $e) { reply_json(422,['ok'=>false,'error'=>'Field discovery: '.$e->getMessage()]); }
     }
 
     foreach ($station['fields'] as $field) {
