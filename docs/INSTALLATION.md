@@ -4,40 +4,6 @@ Todd R. Miller
 
 University of Wisconsin – Milwaukee
 
-# Table of Contents
-
-[Installing SLIM [3](#_Toc245405783)](#_Toc245405783)
-
-[Create a New Station [6](#create-a-new-station)](#create-a-new-station)
-
-[Create a Dashboard [9](#create-a-dashboard)](#create-a-dashboard)
-
-[Display Types [10](#display-types)](#display-types)
-
-[Time-Series Line Plot
-[10](#time-series-line-plot)](#time-series-line-plot)
-
-[Recent-Value Gauge [11](#recent-value-gauge)](#recent-value-gauge)
-
-[Polar Plot (Wind Rose)
-[11](#polar-plot-wind-rose)](#polar-plot-wind-rose)
-
-[Recent Directional Observations
-[11](#recent-directional-observations)](#recent-directional-observations)
-
-[Spatial Profile Plot
-[12](#spatial-profile-plot)](#spatial-profile-plot)
-
-[Station Location Map
-[12](#station-location-map)](#station-location-map)
-
-[Image Display [13](#image-display)](#image-display)
-
-[Custom Text Display [13](#custom-text-display)](#custom-text-display)
-
-[Date Range Selector [14](#date-range-selector)](#date-range-selector)
-
-[SLIM Server Requirements [15](#_Toc245405796)](#_Toc245405796)
 
 **\**
 <span id="_Toc245405783" class="anchor"></span>Installing SLIM
