@@ -1,4 +1,4 @@
-# SLIM — Share, Log, Ingest and Manage
+# SLIM — Share, Log, Ingest, Manage
 
 **A lightweight, self-hosted web application for environmental monitoring data.**
 
